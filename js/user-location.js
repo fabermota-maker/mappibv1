@@ -1,0 +1,912 @@
+/**
+ * Orquestrador: localização GPS em tempo real + heading + puck + câmera.
+ */
+(function (global) {
+  "use strict";
+
+  const GT = () => (typeof GeoTransform !== "undefined" ? GeoTransform : null);
+
+  /** Fallback se data/geo-reference.json não carregar (GitHub Pages / path). */
+  const FALLBACK_GEO = {
+    id: "pib-curitiba-campus",
+    level: "L00",
+    mapCenter: { latitude: -25.442099, longitude: -49.284715 },
+    controlPoints: [
+      { id: "C", latitude: -25.441556, longitude: -49.284917, svgX: 21.5, svgY: 347, weight: 1.4 },
+      { id: "D", latitude: -25.44125, longitude: -49.284222, svgX: 100, svgY: 140, weight: 1.1 },
+      { id: "J", latitude: -25.442488, longitude: -49.284353, svgX: 739.48, svgY: 513.26, weight: 1.2 },
+      { id: "K", latitude: -25.442753, longitude: -49.284258, svgX: 860.56, svgY: 513.26, weight: 1.1 },
+      { id: "Q", latitude: -25.442249, longitude: -49.284654, svgX: 739.93, svgY: 458, weight: 1.35 },
+      { id: "W", latitude: -25.44242, longitude: -49.28448, svgX: 860.72, svgY: 478.86, weight: 1.2 },
+      { id: "V2", latitude: -25.44235, longitude: -49.28455, svgX: 819.49, svgY: 469.98, weight: 1.15 },
+      { id: "X", latitude: -25.442752, longitude: -49.284506, svgX: 914.04, svgY: 479.13, weight: 1.15 },
+      { id: "N", latitude: -25.442469, longitude: -49.285246, svgX: 591.08, svgY: 826.85, weight: 1.4 },
+      { id: "O", latitude: -25.442106, longitude: -49.285379, svgX: 514.38, svgY: 846.6, weight: 1.3 },
+      { id: "M", latitude: -25.443038, longitude: -49.284959, svgX: 940.95, svgY: 830, weight: 1 },
+      { id: "A", latitude: -25.441694, longitude: -49.285528, svgX: 40, svgY: 780, weight: 1 },
+    ],
+  };
+
+  function createUserLocationSystem(ctx) {
+    const {
+      overlay,
+      viewport,
+      canvas,
+      locBtn,
+      gpsCompass,
+      gpsCompassArrow,
+      getState,
+      setState,
+      apply,
+      clamp,
+      getViewBox,
+      getMetersPerUnit,
+      getMapScale,
+      toast,
+      ensureCampusView,
+      getOverlay,
+    } = ctx;
+
+    let geo = null;
+    let geofence = null;
+    let permissions = null;
+    let location = null;
+    let heading = null;
+    let puck = null;
+    let camera = null;
+    let animId = null;
+    let started = false;
+    let starting = false;
+    let startPromise = null;
+    let targetSvg = { x: null, y: null };
+    let displaySvg = { x: null, y: null };
+    let lastGeofenceToast = "";
+    let lastGeofenceToastAt = 0;
+    let lastAreaId = null;
+
+    const defaultNav = {
+      latitude: null,
+      longitude: null,
+      accuracy: null,
+      deviceHeading: null,
+      locationBearing: null,
+      speed: null,
+      isFollowingLocation: false,
+      isFollowingHeading: false,
+      followMode: "free",
+      permissionStatus: "prompt",
+      orientationStatus: "prompt",
+      cameraBearing: 0,
+      gpsAvailable: false,
+      headingAvailable: false,
+      geofenceStatus: "CHECKING",
+    };
+
+    function initState() {
+      const s = getState();
+      if (!s.userNav) setState({ userNav: { ...defaultNav } });
+    }
+
+    function patchNav(p) {
+      const cur = getState().userNav || defaultNav;
+      setState({ userNav: { ...cur, ...p } });
+      updateLocBtn();
+    }
+
+    function metersToSvgUnits(meters) {
+      const mpu = getMetersPerUnit?.() || 0.35;
+      let units;
+      if (geo?.metersToSvgUnits) units = geo.metersToSvgUnits(meters);
+      else units = meters / mpu;
+      const vb = getViewBox?.() || {};
+      const maxSpan = Math.min(vb.w || 1011, vb.h || 862) * 0.08;
+      return Math.min(units, maxSpan);
+    }
+
+    function updateLocBtn() {
+      if (!locBtn) return;
+      const nav = getState().userNav || {};
+      const mode = nav.followMode || "free";
+      const idle = !started && mode !== "off";
+      locBtn.dataset.mode = idle ? "free" : mode;
+      const gpsOn = started && mode !== "off" && (nav.gpsAvailable || starting);
+      locBtn.dataset.gps = gpsOn ? "on" : "off";
+      locBtn.classList.toggle("is-follow", mode === "follow");
+      locBtn.classList.toggle("is-follow-heading", mode === "follow-heading");
+      locBtn.classList.toggle("is-gps-off", mode === "off");
+      locBtn.classList.toggle("is-busy", !!starting);
+      const labels = {
+        idle: "Ativar minha localização",
+        free: "Mapa livre — arraste para navegar (toque p/ desligar GPS)",
+        follow: "Seguindo localização (toque p/ seguir direção)",
+        "follow-heading": "Seguindo localização e direção (toque p/ mapa livre)",
+        off: "GPS desligado (toque p/ ativar)",
+      };
+      locBtn.title = idle ? labels.idle : (labels[mode] || labels.off);
+      locBtn.setAttribute(
+        "aria-pressed",
+        mode === "follow" || mode === "follow-heading" ? "true" : "false",
+      );
+      updateGpsCompass();
+    }
+
+    function showGpsCompass(on) {
+      if (!gpsCompass) return;
+      if (on) {
+        gpsCompass.hidden = false;
+        gpsCompass.removeAttribute("hidden");
+        gpsCompass.setAttribute("aria-hidden", "false");
+      } else {
+        gpsCompass.hidden = true;
+        gpsCompass.setAttribute("hidden", "");
+        gpsCompass.setAttribute("aria-hidden", "true");
+      }
+    }
+
+    function isMobileDevice() {
+      return typeof innerWidth !== "undefined" && innerWidth <= 860;
+    }
+
+    /** Ícone #pibNavArrow aponta para cima (N) em 0° — só compensar se o asset mudar. */
+    const COMPASS_ICON_OFFSET = 0;
+    let compassArrowDeg = null;
+    let compassWarned = false;
+
+    function normalizeCompassHeading(deg) {
+      if (deg == null || !isFinite(deg)) return null;
+      return ((deg % 360) + 360) % 360;
+    }
+
+    function compassArrowRotation(deviceHeading) {
+      const normalizedHeading = normalizeCompassHeading(deviceHeading);
+      if (normalizedHeading == null) return COMPASS_ICON_OFFSET;
+      return -normalizedHeading + COMPASS_ICON_OFFSET;
+    }
+
+    function applyCompassArrowRotation(targetDeg) {
+      if (!gpsCompassArrow) return;
+      if (targetDeg == null || !isFinite(targetDeg)) {
+        compassArrowDeg = null;
+        gpsCompassArrow.style.transform = `rotate(${COMPASS_ICON_OFFSET}deg)`;
+        return;
+      }
+      if (compassArrowDeg == null) {
+        compassArrowDeg = targetDeg;
+      } else {
+        const delta = ((targetDeg - compassArrowDeg + 540) % 360) - 180;
+        compassArrowDeg += delta;
+      }
+      gpsCompassArrow.style.transform = `rotate(${compassArrowDeg.toFixed(2)}deg)`;
+    }
+
+    function updateGpsCompass() {
+      const nav = getState().userNav || {};
+      const isNavigating = document.body.classList.contains("is-navigating");
+      const mobile = isMobileDevice();
+      const gpsOn = started && nav.gpsAvailable;
+      const showCompass = mobile && !isNavigating && gpsOn;
+      showGpsCompass(showCompass);
+      if (!showCompass || !gpsCompassArrow) {
+        if (!showCompass) applyCompassArrowRotation(null);
+        return;
+      }
+
+      if (!nav.headingAvailable) {
+        applyCompassArrowRotation(null);
+        return;
+      }
+
+      const deviceH = heading?.getDisplayHeading?.() ?? nav.deviceHeading;
+      if (deviceH == null || !isFinite(deviceH)) {
+        applyCompassArrowRotation(null);
+        return;
+      }
+
+      applyCompassArrowRotation(compassArrowRotation(deviceH));
+    }
+
+    function syncPuckCompassMeta() {
+      if (!puck?.root) return;
+      const nav = getState().userNav || {};
+      puck.root.setAttribute("data-camera-bearing", String(nav.cameraBearing || 0));
+      const northOffset = geo?.transform?.mapNorthOffset;
+      if (isFinite(northOffset)) {
+        puck.root.setAttribute("data-map-north-offset", String(northOffset));
+      }
+    }
+
+    function animateFrame() {
+      if (targetSvg.x != null && displaySvg.x != null) {
+        const f = 0.2;
+        displaySvg.x += (targetSvg.x - displaySvg.x) * f;
+        displaySvg.y += (targetSvg.y - displaySvg.y) * f;
+        const nav = getState().userNav || {};
+        puck?.setPosition(displaySvg.x, displaySvg.y, nav.accuracy, metersToSvgUnits);
+        puck?.updateArrowScale?.();
+        if (nav.isFollowingLocation) {
+          camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+        }
+      }
+
+      if (puck && (targetSvg.x != null || puck.isVisible())) {
+        syncPuckCompassMeta();
+      }
+      updateGpsCompass();
+
+      animId = requestAnimationFrame(animateFrame);
+    }
+
+    function toastGeofence(msg) {
+      if (!msg) return;
+      const now = Date.now();
+      if (msg === lastGeofenceToast && now - lastGeofenceToastAt < 5000) return;
+      lastGeofenceToast = msg;
+      lastGeofenceToastAt = now;
+      toast(msg);
+    }
+
+    /**
+     * Prende o puck às áreas caminháveis (NAV_NODES).
+     * allowFreeMovementOverSvg: false → nunca posiciona o marcador livre no SVG.
+     */
+    function resolveSnapFromGpsArea(pos, graph, level) {
+      const areaHit = geofence?.findGpsArea?.(pos.latitude, pos.longitude);
+      const area = areaHit?.point;
+      if (!area?.navNodeId) return null;
+      const node = graph.nodesById?.get?.(area.navNodeId);
+      if (!node || !isFinite(node.x) || !isFinite(node.y)) return null;
+      if (level && (node.level || "L00") !== level) return null;
+      return { x: node.x, y: node.y };
+    }
+
+    function snapOutdoorPoiBySvg(svgPt, graph) {
+      const poiZones = [
+        { nodeId: "L00_N0047", x: 739.93, y: 458, r: 85 },
+        { nodeId: "L00_N0046", x: 819.49, y: 469.98, r: 70 },
+        { nodeId: "L00_N0025", x: 860.72, y: 478.86, r: 70 },
+        { nodeId: "L00_N0051", x: 914.04, y: 479.13, r: 70 },
+      ];
+      for (const zone of poiZones) {
+        if (Math.hypot(svgPt.x - zone.x, svgPt.y - zone.y) > zone.r) continue;
+        const node = graph.nodesById?.get?.(zone.nodeId);
+        if (node && isFinite(node.x) && isFinite(node.y)) {
+          return { x: node.x, y: node.y };
+        }
+      }
+
+      if (svgPt.x >= 620 && svgPt.x <= 940 && svgPt.y >= 488 && svgPt.y <= 560) {
+        const corridorIds = [
+          "L00_N0020_intersection_sevenpass_estaionamento",
+          "L00_N0021_intersection_refeitorio_externo_kids",
+          "L00_N0023_refeitorio_externo_kids",
+          "L00_N0023_intersection_entrada_toldo",
+          "L00_N0055",
+          "L00_N0044",
+          "L00_N0043",
+          "L00_N0049",
+        ];
+        let best = null;
+        for (const id of corridorIds) {
+          const node = graph.nodesById?.get?.(id);
+          if (!node) continue;
+          const d = Math.hypot(svgPt.x - node.x, svgPt.y - node.y);
+          if (!best || d < best.d) best = { node, d };
+        }
+        if (best && best.d < 120) return { x: best.node.x, y: best.node.y };
+      }
+      return null;
+    }
+
+    function snapToWalkableSvg(svgPt, pos) {
+      const rules = geofence?.rules || global.PIB_CURITIBA_LOCATION_RULES || {};
+      if (rules.allowFreeMovementOverSvg) return svgPt;
+
+      const graph = getState()?.navGraph;
+      const NR = global.NavigationRouter;
+      if (!graph || !NR?.nearestNodeId) return svgPt;
+
+      const level = getState()?.activeLevel || "L00";
+
+      if (pos?.latitude != null && pos?.longitude != null) {
+        const fromArea = resolveSnapFromGpsArea(pos, graph, level);
+        if (fromArea) return fromArea;
+      }
+
+      const fromOutdoor = snapOutdoorPoiBySvg(svgPt, graph);
+      if (fromOutdoor) return fromOutdoor;
+
+      const nid = NR.nearestNodeId(svgPt, graph, {
+        level,
+        avoidParking: true,
+        preferOutdoor: true,
+      });
+      if (!nid) return svgPt;
+      const node = graph.nodesById?.get?.(nid) || graph.nodes?.[nid];
+      if (!node || !isFinite(node.x) || !isFinite(node.y)) return svgPt;
+      return { x: node.x, y: node.y };
+    }
+
+    function resolveOverlay() {
+      return (typeof getOverlay === "function" ? getOverlay() : null) || overlay;
+    }
+
+    function showSearchingPuck() {
+      ensureServices();
+      puck?.ensureInOverlay?.(resolveOverlay());
+      let pt = null;
+      if (displaySvg.x != null && displaySvg.y != null) {
+        pt = { x: displaySvg.x, y: displaySvg.y };
+      } else if (geo?.mapCenter) {
+        pt = geo.latLngToSvg(geo.mapCenter.latitude, geo.mapCenter.longitude);
+      }
+      if (!pt || !isFinite(pt.x) || !isFinite(pt.y)) {
+        const vb = getViewBox?.() || {};
+        pt = { x: (vb.w || 600) / 2, y: (vb.h || 400) / 2 };
+      }
+      targetSvg = { ...pt };
+      displaySvg = { ...pt };
+      puck?.setSearching?.(pt.x, pt.y, 0);
+      puck?.setHeading?.(0, getState().userNav?.cameraBearing || 0);
+      puck?.show?.();
+      showGpsCompass(true);
+      patchNav({ gpsAvailable: false });
+      updateLocBtn();
+    }
+
+    function applyAcceptedPosition(pos) {
+      if (!geo?.transform && !geo?.latLngToSvg) return;
+      const rawSvg = geo.latLngToSvg(pos.latitude, pos.longitude);
+      if (!rawSvg || !isFinite(rawSvg.x) || !isFinite(rawSvg.y)) return;
+
+      // GPS vive no campus (L00). Se o usuário estiver em outro andar, volta ao térreo.
+      const level = getState()?.activeLevel || "L00";
+      if (level !== "L00") {
+        try {
+          ensureCampusView?.();
+        } catch (err) {
+          console.warn("ensureCampusView:", err);
+        }
+      }
+
+      ensureServices();
+      puck?.ensureInOverlay?.(resolveOverlay());
+
+      const svgPt = snapToWalkableSvg(rawSvg, pos);
+
+      targetSvg = { x: svgPt.x, y: svgPt.y };
+      if (displaySvg.x == null) displaySvg = { ...targetSvg };
+
+      let locationBearing = pos.locationBearing;
+      if (locationBearing != null && geo.gpsBearingToMapHeading) {
+        locationBearing = geo.gpsBearingToMapHeading(locationBearing);
+      }
+
+      patchNav({
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+        accuracy: pos.accuracy,
+        speed: pos.speed,
+        locationBearing,
+        permissionStatus: "granted",
+        gpsAvailable: true,
+      });
+
+      puck?.setPosition(displaySvg.x, displaySvg.y, pos.accuracy, metersToSvgUnits);
+      puck?.setSearching?.(null);
+      // Cone imediato (norte do mapa até a bússola responder)
+      let mapHeading = 0;
+      const nav = getState().userNav || {};
+      if (nav.deviceHeading != null && isFinite(nav.deviceHeading)) {
+        mapHeading = geo?.gpsBearingToMapHeading
+          ? geo.gpsBearingToMapHeading(nav.deviceHeading)
+          : nav.deviceHeading;
+      } else if (locationBearing != null && isFinite(locationBearing)) {
+        mapHeading = locationBearing;
+      }
+      puck?.setHeading(mapHeading, nav.cameraBearing || 0);
+      puck?.show?.();
+    }
+
+    function onLocationUpdate(pos, err) {
+      if (err || !pos) {
+        if (err?.code === 1) patchNav({ permissionStatus: "denied", gpsAvailable: false });
+        else patchNav({ permissionStatus: "unavailable", gpsAvailable: false });
+        return;
+      }
+
+      // Sempre tenta visualizar o puck; a geofence só restringe navegação interna.
+      if (geofence) {
+        const verdict = geofence.evaluate(pos);
+        patchNav({ geofenceStatus: verdict.status });
+
+        const areaRef = verdict.nearestReference?.inArea
+          ? verdict.nearestReference
+          : geofence.findGpsArea?.(pos.latitude, pos.longitude);
+        const areaId = areaRef?.point?.id || null;
+        if (areaId && areaId !== lastAreaId) {
+          lastAreaId = areaId;
+          const label = areaRef.point.name || "área mapeada";
+          toastGeofence(`Você está na área: ${label}.`);
+        } else if (!areaId) {
+          lastAreaId = null;
+        }
+
+        if (verdict.status === "LOW_ACCURACY") {
+          // Mostra posição aproximada mesmo com precisão ruim (até ~120 m)
+          if (isFinite(pos.accuracy) && pos.accuracy <= 120) {
+            applyAcceptedPosition(pos);
+          } else if (verdict.position) {
+            applyAcceptedPosition(verdict.position);
+          }
+          return;
+        }
+
+        if (verdict.status === "CHECKING") {
+          applyAcceptedPosition(verdict.position || pos);
+          return;
+        }
+
+        if (verdict.status === "OUTSIDE") {
+          toastGeofence(verdict.message);
+          // Visualiza no mapa (snap à entrada/nó) mesmo fora — não some o puck
+          if (verdict.nearest?.point) {
+            const p = verdict.nearest.point;
+            if (isFinite(p.latitude) && isFinite(p.longitude)) {
+              applyAcceptedPosition({
+                latitude: p.latitude,
+                longitude: p.longitude,
+                accuracy: pos.accuracy,
+                speed: 0,
+                locationBearing: null,
+                timestamp: pos.timestamp,
+              });
+            } else if (isFinite(p.svgX) && isFinite(p.svgY)) {
+              ensureServices();
+              targetSvg = { x: p.svgX, y: p.svgY };
+              if (displaySvg.x == null) displaySvg = { ...targetSvg };
+              puck?.setPosition(displaySvg.x, displaySvg.y, pos.accuracy, metersToSvgUnits);
+              patchNav({ gpsAvailable: true, accuracy: pos.accuracy });
+            } else {
+              applyAcceptedPosition(pos);
+            }
+          } else {
+            applyAcceptedPosition(pos);
+          }
+          return;
+        }
+
+        // INSIDE
+        applyAcceptedPosition(verdict.position || pos);
+        return;
+      }
+
+      applyAcceptedPosition(pos);
+    }
+
+    function onHeadingUpdate(h) {
+      if (h == null) {
+        patchNav({ headingAvailable: false, mapHeading: null });
+        global.GpsCompass?.updateFromDeviceHeading?.(null, geo?.transform, 0);
+        return;
+      }
+
+      const mapHeading = heading?.toMapHeading?.(h, geo?.transform)
+        ?? (geo?.gpsBearingToMapHeading ? geo.gpsBearingToMapHeading(h) : h);
+
+      patchNav({
+        deviceHeading: h,
+        mapHeading,
+        headingAvailable: true,
+        orientationStatus: "granted",
+      });
+
+      const cam = getState().userNav?.cameraBearing || 0;
+      global.GpsCompass?.updateFromDeviceHeading?.(h, geo?.transform, cam);
+
+      if (getState().userNav?.isFollowingHeading) {
+        camera?.updateCameraHeading(h, geo);
+        if (displaySvg.x != null && displaySvg.y != null) {
+          camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+        }
+      }
+    }
+
+    async function ensurePermissions() {
+      ensureServices();
+      permissions = permissions || global.PermissionService?.create?.();
+      if (!permissions) return { ok: false };
+
+      await permissions.probeGeolocation();
+      const loc = await permissions.requestLocationPermission();
+      patchNav({ permissionStatus: loc.status });
+
+      if (!loc.ok) {
+        toast(loc.error || (
+          loc.status === "denied"
+            ? "Permissão de localização negada. Ative nas configurações do navegador."
+            : "Localização indisponível. Ative o GPS do aparelho e tente de novo."
+        ));
+        return { ok: false };
+      }
+
+      // Bússola — permissão iOS só após gesto do usuário (clique no botão GPS)
+      let compassGranted = false;
+      if (heading?.requestPermission) {
+        compassGranted = await heading.requestPermission();
+      } else {
+        compassGranted = !!(await global.GpsCompass?.requestCompassPermission?.());
+      }
+      patchNav({ orientationStatus: compassGranted ? "granted" : "denied" });
+      if (compassGranted) {
+        heading?.start?.();
+        global.GpsCompass?.startCompassTracking?.();
+      } else {
+        global.GpsCompass?.updateGpsIconRotation?.(0);
+        applyCompassArrowRotation(null);
+        if (!compassWarned) {
+          compassWarned = true;
+          toast("A orientação por bússola não está disponível neste dispositivo.");
+        }
+      }
+
+      return { ok: true, position: loc.position || null };
+    }
+
+    async function loadGeo() {
+      if (geo?.transform) return true;
+      let data = null;
+      try {
+        const base = document.querySelector('script[src*="user-location"]')?.src;
+        const url = base
+          ? new URL("../data/geo-reference.json", base).href
+          : "data/geo-reference.json";
+        const res = await fetch(url, { cache: "no-store" });
+        if (res.ok) data = await res.json();
+      } catch (err) {
+        console.warn("geo-reference.json:", err);
+      }
+      if (!data) data = FALLBACK_GEO;
+      geo = GT()?.createFromGeoReference?.(data) || null;
+
+      // geofence: fonte canônica = PIB_CURITIBA_LOCATION_CONFIG (js/pib-curitiba-location-config.js)
+      try {
+        if (typeof GeofenceService !== "undefined") {
+          if (global.PIB_CURITIBA_LOCATION_CONFIG) {
+            geofence = GeofenceService.createFromPibConfig(
+              global.PIB_CURITIBA_LOCATION_CONFIG,
+            );
+          } else {
+            const base = document.querySelector('script[src*="user-location"]')?.src;
+            const gUrl = base
+              ? new URL("../data/pib-geofence.json", base).href
+              : "data/pib-geofence.json";
+            geofence = await GeofenceService.loadFromUrl(gUrl);
+          }
+        }
+      } catch (err) {
+        console.warn("geofence / PIB_CURITIBA_LOCATION_CONFIG:", err);
+        geofence = null;
+      }
+
+      return !!geo?.transform;
+    }
+
+    function ensureServices() {
+      const host = resolveOverlay();
+      const vb = getViewBox?.() || {};
+      if (!puck) {
+        puck = global.UserLocationPuck?.create?.(host, {
+          getMapScale: () => (typeof getMapScale === "function" ? getMapScale() : getState()?.scale) || 1,
+          getViewBox: () => getViewBox?.() || { w: 1011, h: 862 },
+          maxAccuracyRadiusSvg: () => Math.min(vb.w || 1011, vb.h || 862) * 0.08,
+          markerScale: global.MapNavIcons?.puckScaleForViewBox?.(vb.w, vb.h),
+        });
+      } else puck.ensureInOverlay?.(host);
+      if (!camera) {
+        camera = global.MapCameraController?.create?.({
+          viewport,
+          canvas,
+          getState,
+          setState,
+          apply,
+          clamp,
+          getViewBox,
+        });
+      }
+      if (!location) {
+        location = global.LocationService?.create?.({
+          positionSmoothing: 0.28,
+          maximumAge: 2000,
+          timeout: 12000,
+        });
+        location?.subscribe(onLocationUpdate);
+      }
+      if (!heading) {
+        heading = global.HeadingService?.create?.({ smoothingFactor: 0.18, targetHz: 30 });
+        heading?.subscribe(onHeadingUpdate);
+      }
+      if (!animId) animId = requestAnimationFrame(animateFrame);
+
+      // centraliza tracking interno no centro, sem exibir o puck ainda
+      if (geo?.mapCenter && displaySvg.x == null) {
+        const c = geo.latLngToSvg(geo.mapCenter.latitude, geo.mapCenter.longitude);
+        if (c) {
+          // guarda alvo interno, mas NÃO chama setPosition (puck permanece oculto)
+          targetSvg = { x: null, y: null };
+          displaySvg = { x: null, y: null };
+        }
+      }
+    }
+
+    async function start({ silent = false } = {}) {
+      if (started) return true;
+      if (startPromise) return startPromise;
+
+      startPromise = (async () => {
+        starting = true;
+        initState();
+        updateLocBtn();
+        showSearchingPuck();
+
+        try {
+          if (typeof navigator === "undefined" || !navigator.geolocation) {
+            if (!silent) toast("Geolocalização não suportada neste navegador.");
+            puck?.hide?.();
+            return false;
+          }
+
+          const campusPromise = Promise.resolve(ensureCampusView?.()).catch((err) => {
+            console.warn("ensureCampusView:", err);
+          });
+          const geoPromise = geo?.transform ? Promise.resolve(true) : loadGeo();
+
+          await Promise.all([campusPromise, geoPromise]);
+
+          if (!geo?.transform) {
+            if (!silent) toast("Georreferência do mapa indisponível.");
+            puck?.hide?.();
+            return false;
+          }
+
+          ensureServices();
+
+          const perm = await ensurePermissions();
+          if (!perm.ok) {
+            puck?.hide?.();
+            showGpsCompass(false);
+            return false;
+          }
+
+          if (perm.position) {
+            applyAcceptedPosition(perm.position);
+            if (displaySvg.x != null) camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+          }
+
+          location?.start();
+          if (getState().userNav?.orientationStatus === "granted") {
+            heading?.start?.();
+            global.GpsCompass?.startCompassTracking?.();
+          }
+
+          document.addEventListener("visibilitychange", onVisibility);
+          started = true;
+          updateLocBtn();
+          showGpsCompass(true);
+          if (!silent && !perm.position) toast("Buscando sua localização…");
+          return true;
+        } finally {
+          starting = false;
+          updateLocBtn();
+        }
+      })();
+
+      try {
+        return await startPromise;
+      } finally {
+        startPromise = null;
+      }
+    }
+
+    /** Força exibir o puck numa lat/lng (após coleta / orientação). */
+    function showAtLatLng(latitude, longitude, accuracy) {
+      if (!isFinite(latitude) || !isFinite(longitude)) return false;
+      try {
+        ensureCampusView?.();
+      } catch (err) {
+        console.warn("ensureCampusView:", err);
+      }
+      ensureServices();
+      applyAcceptedPosition({
+        latitude,
+        longitude,
+        accuracy: accuracy ?? 30,
+        speed: 0,
+        locationBearing: null,
+        timestamp: Date.now(),
+      });
+      if (displaySvg.x != null) {
+        camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+      }
+      return puck?.isVisible?.() || targetSvg.x != null;
+    }
+
+    /** Atualiza puck com posição já ajustada ao grafo (navegação ao vivo). */
+    function updateTrackedPosition(svgX, svgY, accuracyMeters) {
+      if (!isFinite(svgX) || !isFinite(svgY)) return false;
+      ensureServices();
+      targetSvg.x = svgX;
+      targetSvg.y = svgY;
+      displaySvg.x = svgX;
+      displaySvg.y = svgY;
+      puck?.setPosition(svgX, svgY, accuracyMeters, metersToSvgUnits);
+      puck?.show();
+      return true;
+    }
+
+    function deactivateGps() {
+      location?.stop();
+      heading?.stop();
+      global.GpsCompass?.stopCompassTracking?.();
+      applyCompassArrowRotation(null);
+      puck?.hide();
+      showGpsCompass(false);
+      targetSvg = { x: null, y: null };
+      displaySvg = { x: null, y: null };
+      camera?.setFollowMode("off");
+      patchNav({
+        gpsAvailable: false,
+        headingAvailable: false,
+        deviceHeading: null,
+        mapHeading: null,
+        latitude: null,
+        longitude: null,
+        accuracy: null,
+        speed: null,
+        locationBearing: null,
+        isFollowingLocation: false,
+        isFollowingHeading: false,
+      });
+      started = false;
+      starting = false;
+      startPromise = null;
+      updateLocBtn();
+    }
+
+    async function onLocBtnClick() {
+      // 1) ainda não iniciou → feedback imediato + permissão/GPS
+      if (!started) {
+        showSearchingPuck();
+        const ok = await start();
+        if (!ok) return;
+        camera?.setFollowMode("follow");
+        updateLocBtn();
+        if (displaySvg.x != null) camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+        toast("Seguindo sua localização.");
+        return;
+      }
+
+      // 2) GPS ligado mas ainda sem fix → tenta de novo
+      if (!getState().userNav?.gpsAvailable) {
+        showSearchingPuck();
+        location?.start();
+        const perm = await ensurePermissions();
+        if (perm.ok && perm.position) {
+          applyAcceptedPosition(perm.position);
+          camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+        } else if (perm.ok) {
+          toast("Buscando sua localização…");
+        }
+        return;
+      }
+
+      // 3) cicla seguir → seguir+direção → mapa livre → GPS desligado
+      const cycled = camera?.cycleFollowMode?.();
+      if (cycled === "off") {
+        deactivateGps();
+        toast("GPS desligado.");
+        return;
+      }
+      updateLocBtn();
+      const mode = getState().userNav?.followMode;
+      if (mode === "follow") {
+        if (displaySvg.x != null) camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+        toast("Seguindo sua localização.");
+      } else if (mode === "follow-heading") {
+        if (getState().userNav?.orientationStatus !== "granted") {
+          heading?.requestPermission?.().then((ok) => {
+            if (!ok) return;
+            patchNav({ orientationStatus: "granted" });
+            heading?.start?.();
+            global.GpsCompass?.startCompassTracking?.();
+          });
+        }
+        if (displaySvg.x != null) camera?.centerOnPoint(displaySvg.x, displaySvg.y);
+        toast("Seguindo localização e direção.");
+      } else if (mode === "free") {
+        toast("Mapa livre — arraste para navegar.");
+      }
+    }
+
+    function bindLocBtn() {
+      if (!locBtn || locBtn._bound) return;
+      locBtn._bound = true;
+      locBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onLocBtnClick().catch((err) => console.warn("locBtn:", err));
+      });
+    }
+
+    function onVisibility() {
+      if (document.hidden) {
+        heading?.pause();
+        global.GpsCompass?.stopCompassTracking?.();
+      } else {
+        heading?.resume();
+        if (getState().userNav?.orientationStatus === "granted") {
+          global.GpsCompass?.startCompassTracking?.();
+        }
+      }
+    }
+
+    function onMapDragged() {
+      camera?.exitFollow();
+      updateLocBtn();
+    }
+
+    function stop() {
+      location?.stop();
+      heading?.stop();
+      global.GpsCompass?.stopCompassTracking?.();
+      if (animId) cancelAnimationFrame(animId);
+      animId = null;
+      document.removeEventListener("visibilitychange", onVisibility);
+      puck?.hide();
+      showGpsCompass(false);
+      started = false;
+      updateLocBtn();
+    }
+
+    function getNavigationState() {
+      return { ...(getState().userNav || defaultNav) };
+    }
+
+    // botão sempre funcional, mesmo se o auto-start falhar
+    initState();
+    bindLocBtn();
+    updateLocBtn();
+    loadGeo().catch(() => {});
+
+    return {
+      start,
+      stop,
+      onMapDragged,
+      getNavigationState,
+      updateLocBtn,
+      onLocBtnClick,
+      showAtLatLng,
+      updateTrackedPosition,
+      refreshPuckScale: () => puck?.updateArrowScale?.(),
+      isStarted: () => started,
+      hidePuck: () => {
+        puck?.hide?.();
+        showGpsCompass(false);
+        camera?.setFollowMode("off");
+      },
+      setFollowMode: (mode) => {
+        camera?.setFollowMode(mode);
+        updateLocBtn();
+      },
+      startFollowing: async () => {
+        const ok = await start({ silent: true });
+        if (ok) {
+          camera?.setFollowMode("follow");
+          updateLocBtn();
+        }
+        return ok;
+      },
+    };
+  }
+
+  global.UserLocationSystem = { create: createUserLocationSystem };
+})(typeof window !== "undefined" ? window : globalThis);
