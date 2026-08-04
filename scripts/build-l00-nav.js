@@ -121,21 +121,28 @@ function dist(a, b) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-function poiCenter(gInner) {
+function parseTransform(gOpenTag) {
+  const m = gOpenTag.match(/transform="translate\(([-\d.]+)[,\s]+([-\d.]+)\)"/);
+  if (!m) return { tx: 0, ty: 0 };
+  return { tx: +m[1], ty: +m[2] };
+}
+
+function poiCenter(gOpenTag, gInner) {
+  const { tx, ty } = parseTransform(gOpenTag);
   const m = gInner.match(/<(?:circle|ellipse)[^>]*cx="([^"]+)"[^>]*cy="([^"]+)"/);
-  if (m) return { x: +m[1], y: +m[2] };
+  if (m) return { x: +m[1] + tx, y: +m[2] + ty };
   const pathM = gInner.match(/d="M\s*([\d.+-]+)[,\s]+([\d.+-]+)/);
-  if (pathM) return { x: +pathM[1], y: +pathM[2] };
+  if (pathM) return { x: +pathM[1] + tx, y: +pathM[2] + ty };
   return null;
 }
 
 function parsePois(svgText, nodes) {
   const pois = [];
-  const re = /<g id="(P\d+[^"]*)">([\s\S]*?)<\/g>/g;
+  const re = /<g id="(P[^"]+)"([^>]*)>([\s\S]*?)<\/g>/g;
   let m;
   while ((m = re.exec(svgText))) {
     const rawId = m[1].replace(/\s+/g, "_").replace(/-/g, "_");
-    const center = poiCenter(m[2]);
+    const center = poiCenter(m[2], m[3]);
     if (!center) continue;
     let nearest = nodes[0];
     let best = Infinity;

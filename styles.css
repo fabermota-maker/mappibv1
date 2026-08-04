@@ -958,9 +958,12 @@ body.is-dev .calib-box:not([hidden]) { display: flex; }
 .svg-host [data-icon-hidden][data-selected="true"] { filter: none; transform: none; }
 .svg-host .layer-faint { opacity: .35; pointer-events: none; }
 
-/* Poltronas do templo (TEMPLO / cls-2) */
+/* Poltronas do templo (TEMPLO / wall-cls-2 após composição das camadas) */
+.svg-host #L00_TEMPLO .wall-cls-2,
 .svg-host #L00_TEMPLO .cls-2,
+.svg-host #TEMPLO .wall-cls-2,
 .svg-host #TEMPLO .cls-2,
+.svg-host symbol#TEMPLO .wall-cls-2,
 .svg-host symbol#TEMPLO .cls-2 {
   opacity: 0.9 !important;
 }

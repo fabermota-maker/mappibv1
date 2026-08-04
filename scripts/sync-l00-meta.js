@@ -26,6 +26,11 @@ const extraL00 = {
     "L00_node_0072_entrada_templo_02",
   ],
   P000E1_entrada_lateral_01_templo: ["L00_node_0088__entrada_templo_01"],
+  P020_espaco_servir: [
+    "L00_node_0035_espaco_servir",
+    "L00_node_0033_corredor_servir",
+    "L00_node_0036",
+  ],
 };
 
 meta.poiCatalog = (meta.poiCatalog || []).map((entry) => {
@@ -40,4 +45,15 @@ meta.poiCatalog = (meta.poiCatalog || []).map((entry) => {
 
 meta.generatedAt = new Date().toISOString();
 fs.writeFileSync(metaPath, JSON.stringify(meta));
+
+// Aplica overrides também em L00.json (grafo usa estes nodeIds)
+const l00Path = path.join(root, "data/navigation/floors/L00.json");
+const l00Data = JSON.parse(fs.readFileSync(l00Path, "utf8"));
+l00Data.pois = (l00Data.pois || []).map((p) => {
+  const extra = extraL00[p.rawId];
+  if (!extra?.length) return p;
+  return { ...p, nodeIds: [...extra] };
+});
+fs.writeFileSync(l00Path, JSON.stringify(l00Data));
 console.log("meta.json L00 POIs synced");
+console.log("L00.json POI nodeIds patched");

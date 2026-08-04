@@ -455,6 +455,7 @@
       try {
         await loader.ensureFloors(ids);
         state.navGraph = loader.getGraph();
+        invalidateTempleEntranceCache();
         syncPoisFromNavigation(loader.getMeta()?.poiCatalog || [], { injectAllFloors: true });
       } catch (err) {
         console.error("ensureNavGraphFloors:", err);
@@ -597,6 +598,12 @@
       }
 
       state.navGraph = result.graph;
+      invalidateTempleEntranceCache();
+      validatedTempleEntrances();
+      if (globalThis.GroundFloorRouteMap) {
+        const rep = GroundFloorRouteMap.validateAll(state.navGraph, G.nodes, G.adj);
+        console.info("[GroundFloorRoute] Validação L00:", rep);
+      }
       const meta = result.meta || {};
       if (meta.metersPerUnit > 0 && !state.calibration) {
         CONFIG.metersPerUnit = meta.metersPerUnit;
@@ -1718,11 +1725,12 @@
     return "via elevador";
   }
 
-  /** Andar exibido ao traçar rota — sempre começa no andar de origem (caminho até elevador/escada). */
+  /** Andar exibido ao traçar rota — subsolo→Térreo abre no mapa T (trecho após Nárnia). */
   function routeInitialViewLevel(route, oLvl, dLvl) {
     if (oLvl === dLvl) return oLvl;
 
     if (routeInvolvesBasementTransfer(oLvl, dLvl)) {
+      if (isBasementFloor(oLvl) && dLvl === "L00") return "L00";
       if (isBasementFloor(oLvl)) return oLvl;
       if (isAdmFloor(oLvl)) return oLvl;
       return "L00";
@@ -1920,7 +1928,7 @@
 
   /** Ancora origem/destino na entrada oficial do CONFIG (ícone visual separado). */
   function applyRoutePoiAnchor(poi) {
-    if (!poi || poi.id === "__here__") return;
+    if (!poi || poi.id === "__here__" || poi.isGenericGroundDestination || poi.isGenericTemple) return;
     applyInjectedPoiIcon(poi);
     const raw = poiRawKey(poi);
     const anchor = CONFIG.poiAnchors?.[raw];
@@ -1931,28 +1939,80 @@
     poi.navNodeIds = [anchor];
   }
 
+  function gfr() {
+    return globalThis.GroundFloorRouteMap || null;
+  }
+
   /** Resolve IDs de nós de origem/destino a partir do JSON de navegação. */
   function resolveNavNodeIds(poi, role) {
     if (!poi) return [];
-    const raw = poiRawKey(poi);
-    const cfgAnchor = CONFIG.poiAnchors?.[raw] || CONFIG.poiAnchors?.[poi.rawId];
-    if (cfgAnchor && state.navGraph?.nodesById.has(cfgAnchor)) return [cfgAnchor];
-    if (poi.navNodeIds?.length) return poi.navNodeIds.filter((id) => state.navGraph?.nodesById.has(id));
-    if (poi.anchor && state.navGraph?.nodesById.has(poi.anchor)) return [poi.anchor];
-    const lvl = poiLevel(poi) || state.activeLevel || "L00";
-    if (poi.id === "__here__" || role === "here") {
-      if (poi.nearPoiId) {
-        const zAnchor = CONFIG.poiAnchors?.[poi.nearPoiId];
-        if (zAnchor && state.navGraph?.nodesById.has(zAnchor)) return [zAnchor];
+    const GFRM = gfr();
+    if (GFRM?.isGenericGroundDestination(poi)) return [];
+
+    const enriched = GFRM
+      ? GFRM.enrichPoiWithOfficialNode({ ...poi }, state.navGraph, G.nodes, G.adj, poiRawKey)
+      : poi;
+
+    const official = GFRM?.resolveOfficialNodeId(enriched, state.navGraph, G.nodes, G.adj);
+    if (official?.unavailable) {
+      toast("Este acesso está temporariamente indisponível para cálculo de rota.");
+      return [];
+    }
+    if (official?.graphNodeId) return [official.graphNodeId];
+
+    if (poi.templeEntranceNodeId || poi.graphNodeId || poi.officialAccessNodeId) {
+      const base = poi.officialAccessNodeId || poi.templeEntranceNodeId || nodeIdBase(poi.graphNodeId);
+      const resolved = poi.graphNodeId || resolveGraphNodeId(base);
+      if (resolved && state.navGraph?.nodesById.has(resolved) && graphNodeHasEdges(resolved)) {
+        return [resolved];
       }
-      const id = NavigationRouter.nearestNodeId(poi, state.navGraph, {
+      console.warn(`Entrada do Templo indisponível: node ${base} não encontrado ou sem conexão válida.`);
+      return [];
+    }
+
+    const raw = poiRawKey(enriched);
+    if (GFRM?.isMappedL00Poi(enriched, poiRawKey)) {
+      const area = GFRM.areaForPoiRaw(raw);
+      if (area?.requiresAccessSelection) return [];
+      if (area?.nodeId) {
+        const v = GFRM.validateAccess({ nodeId: area.nodeId, label: area.label }, state.navGraph, G.nodes, G.adj);
+        if (v?.graphNodeId) return [v.graphNodeId];
+        toast("Este acesso está temporariamente indisponível para cálculo de rota.");
+        return [];
+      }
+    }
+
+    const cfgAnchor = CONFIG.poiAnchors?.[raw] || CONFIG.poiAnchors?.[enriched.rawId];
+    if (cfgAnchor) {
+      const resolvedCfg = resolveGraphNodeId(cfgAnchor);
+      if (resolvedCfg && state.navGraph?.nodesById.has(resolvedCfg) && graphNodeHasEdges(resolvedCfg)) {
+        return [resolvedCfg];
+      }
+    }
+    if (enriched.navNodeIds?.length) {
+      const ids = enriched.navNodeIds
+        .map((id) => resolveGraphNodeId(id) || id)
+        .filter((id) => state.navGraph?.nodesById.has(id) && graphNodeHasEdges(id));
+      if (ids.length) return ids;
+    }
+    if (enriched.anchor && state.navGraph?.nodesById.has(enriched.anchor)) {
+      if (graphNodeHasEdges(enriched.anchor)) return [enriched.anchor];
+    }
+    const lvl = poiLevel(enriched) || state.activeLevel || "L00";
+    if (enriched.id === "__here__" || role === "here") {
+      if (enriched.nearPoiId) {
+        const nearPoi = (G.pois || []).find((p) => poiRawKey(p) === enriched.nearPoiId);
+        const nearIds = nearPoi ? resolveNavNodeIds(nearPoi, role) : [];
+        if (nearIds.length) return nearIds;
+      }
+      const id = NavigationRouter.nearestNodeId(enriched, state.navGraph, {
         avoidParking: true,
         level: lvl,
       });
       return id ? [id] : [];
     }
-    // fallback: snap visual → node do JSON (mesmo andar)
-    const id = NavigationRouter.nearestNodeId(poiIcon(poi) || poi, state.navGraph, { level: lvl });
+    if (GFRM?.isMappedL00Poi(enriched, poiRawKey)) return [];
+    const id = NavigationRouter.nearestNodeId(poiIcon(enriched) || enriched, state.navGraph, { level: lvl });
     return id ? [id] : [];
   }
 
@@ -2016,16 +2076,161 @@
 
   function isTempleEntrancePoi(poi) {
     if (!poi) return false;
+    if (gfr()?.isOfficialAccessPoi(poi)) return true;
+    if (poi.templeEntranceNodeId || poi.officialAccessNodeId) return true;
     const id = norm(poi.rawId || poi.id || "");
-    return /^p000e[1-5]_entrada_/.test(id);
+    return /^p000e[1-5]_entrada_/.test(id) || /^templo-entrada-l00_node_\d{4}$/.test(id) || /^gfr-/.test(id);
   }
 
   function isTemplePoi(poi) {
     if (!poi || isTempleEntrancePoi(poi)) return false;
+    if (poi.isGenericGroundDestination || poi.isGenericTemple) return true;
     const raw = poi.rawId || "";
     const name = poi.name || "";
     if (/elevador|estacionamento|toldo|narnia/i.test(raw + name)) return false;
     return raw === "P000_templo" || /^templo$/i.test(name.trim());
+  }
+
+  function buildGenericTemplePoi() {
+    const GFRM = gfr();
+    if (GFRM) return GFRM.buildGenericAreaPoi(GFRM.areaById("templo"));
+    const base = (G.pois || []).find((p) => poiRawKey(p) === "P000_templo");
+    return {
+      id: "P000_templo",
+      rawId: "P000_templo",
+      name: "Templo",
+      searchLabel: "Templo",
+      level: "L00",
+      mapLevel: "L00",
+      building: "Templo",
+      group: "auditorios",
+      cat: "geral",
+      active: true,
+      isGenericTemple: true,
+      x: base?.x,
+      y: base?.y,
+      iconX: base?.iconX,
+      iconY: base?.iconY,
+    };
+  }
+
+  /** ID-base de node (L00_node_NNNN) — ignora sufixo descritivo. */
+  function nodeIdBase(id) {
+    const m = String(id || "").match(/^(L\d{2}_node_\d{4})/);
+    return m ? m[1] : String(id || "");
+  }
+
+  /** Resolve ID-base → ID real no grafo (ex.: L00_node_0088 → L00_node_0088__entrada_templo_01). */
+  function resolveGraphNodeId(baseId) {
+    const base = nodeIdBase(baseId);
+    if (!base) return null;
+    if (state.navGraph?.nodesById?.has(base)) return base;
+    if (G.nodes?.[base]) return base;
+    const prefix = base + "_";
+    if (state.navGraph?.nodesById) {
+      for (const id of state.navGraph.nodesById.keys()) {
+        if (id === base || id.startsWith(prefix)) return id;
+      }
+    }
+    if (G.nodes) {
+      for (const id of Object.keys(G.nodes)) {
+        if (id === base || id.startsWith(prefix)) return id;
+      }
+    }
+    return null;
+  }
+
+  function graphNodeHasEdges(resolvedId) {
+    if (!resolvedId) return false;
+    if ((state.navGraph?.adjacency?.get(resolvedId) || []).length) return true;
+    return ((G.adj?.[resolvedId] || []).length > 0);
+  }
+
+  function validateTempleEntranceEntry(spec, num) {
+    const baseId = nodeIdBase(spec.nodeId || spec.id);
+    const label = spec.label || `Templo — Entrada ${num}`;
+    const resolved = resolveGraphNodeId(baseId);
+    if (!resolved || !graphNodeHasEdges(resolved)) {
+      console.warn(`Entrada do Templo indisponível: node ${baseId} não encontrado ou sem conexão válida.`);
+      return null;
+    }
+    const node = state.navGraph?.nodesById?.get(resolved) || G.nodes?.[resolved];
+    return {
+      nodeId: baseId,
+      graphNodeId: resolved,
+      label,
+      x: node?.x,
+      y: node?.y,
+    };
+  }
+
+  let _validatedTempleEntrancesCache = null;
+
+  function invalidateTempleEntranceCache() {
+    _validatedTempleEntrancesCache = null;
+  }
+
+  function validatedTempleEntrances() {
+    if (!_validatedTempleEntrancesCache) {
+      _validatedTempleEntrancesCache = (CONFIG.templeEntrances || [])
+        .map((spec, i) => validateTempleEntranceEntry(spec, i + 1))
+        .filter(Boolean);
+    }
+    return _validatedTempleEntrancesCache;
+  }
+
+  function buildTempleEntrancePoi(entry) {
+    const id = `templo-entrada-${entry.nodeId}`;
+    return {
+      id,
+      rawId: id,
+      name: entry.label,
+      searchLabel: entry.label,
+      level: "L00",
+      mapLevel: "L00",
+      building: "Templo",
+      group: "auditorios",
+      cat: "geral",
+      active: true,
+      templeEntranceNodeId: entry.nodeId,
+      graphNodeId: entry.graphNodeId,
+      anchor: entry.graphNodeId,
+      navNodeIds: [entry.graphNodeId],
+      snap: { x: entry.x, y: entry.y },
+      x: entry.x,
+      y: entry.y,
+      iconX: entry.x,
+      iconY: entry.y,
+    };
+  }
+
+  function isTempleSearchQuery(query) {
+    const q = normSearch(String(query || "").trim());
+    if (!q) return false;
+    if (q === "templo" || q === "igreja") return true;
+    if ("templo".startsWith(q) && q.length >= 2) return true;
+    if ("igreja".startsWith(q) && q.length >= 2) return true;
+    const aliases = CONFIG.poiSearchAliases?.P000_templo || [];
+    return aliases.some((a) => {
+      const na = normSearch(a);
+      return na === q || na.startsWith(q) || q.includes(na);
+    });
+  }
+
+  /** Após escolher rota do Templo, fixa destino/origem na entrada correspondente. */
+  function syncTripPoiFromTempleRoute(route) {
+    if (!route?.entranceId || route.kind !== "templo") return;
+    const entry = validatedTempleEntrances().find((e) => e.graphNodeId === route.entranceId);
+    if (!entry) return;
+    const poi = buildTempleEntrancePoi(entry);
+    if (isTemplePoi(state.dest) && !isTempleEntrancePoi(state.dest)) {
+      state.dest = poi;
+      if (el.destInput) el.destInput.value = poi.searchLabel || poi.name;
+    } else if (isTemplePoi(state.origin) && !isTempleEntrancePoi(state.origin)) {
+      state.origin = poi;
+      if (el.originInput) el.originInput.value = poi.searchLabel || poi.name;
+    }
+    highlightSelected();
   }
 
   function poiRawKey(poi) {
@@ -2047,7 +2252,25 @@
     return /P027_elevador_templo|P000_templo|escada_mesanino|L01_node_0001_elevador|L02_node_0001_elevador|L03_node_0001|L04_node_0001_elevador|L05_node_0001_elevador|L06_node_0033_elevador/i.test(k);
   }
 
+  /** CF / RGO → Templo: só entradas do estabelecimento (sem Av. Batel / jardim). */
+  function isCfToTemplePair(origin, dest) {
+    if (!origin || !dest) return false;
+    const keys = [poiRawKey(origin), poiRawKey(dest)];
+    const isCfKey = (k) => /P005_centro_de_formacao|P004_sala_de_oracao_RGO|centro_de_formacao|formacao_cf/i.test(k);
+    const toTemple = (poi) => isTempleEntrancePoi(poi) || isTemplePoi(poi) || isTempleHubPoi(poi);
+    if ((isCfKey(keys[0]) && toTemple(dest)) || (isCfKey(keys[1]) && toTemple(origin))) return true;
+    const oName = normSearch(origin.searchLabel || origin.name || "");
+    const dName = normSearch(dest.searchLabel || dest.name || "");
+    const cfName = /centro de formacao|formacao cf|^cf$|centro formacao|sala de oracao rgo/.test(oName)
+      || /centro de formacao|formacao cf|^cf$|centro formacao|sala de oracao rgo/.test(dName);
+    const templeName = /^(templo|igreja)$/.test(oName) || /^(templo|igreja)$/.test(dName)
+      || /\btemplo\b/.test(oName) || /\btemplo\b/.test(dName)
+      || /^templo\s*[-—]\s*entrada\s*\d/.test(oName) || /^templo\s*[-—]\s*entrada\s*\d/.test(dName);
+    return cfName && templeName;
+  }
+
   function namedExternalSpecsForPair(origin, dest) {
+    if (isCfToTemplePair(origin, dest)) return [];
     const a = poiRawKey(origin);
     const b = poiRawKey(dest);
     const matchSide = (spec, key) => {
@@ -3047,9 +3270,147 @@
   }
 
   function templeEntranceList() {
-    return (CONFIG.templeEntrances || []).filter((e) =>
-      state.navGraph?.nodesById.has(e.id) || (G.nodes && G.nodes[e.id])
+    return validatedTempleEntrances().map((e) => ({
+      id: e.graphNodeId,
+      nodeId: e.nodeId,
+      label: e.label,
+    }));
+  }
+
+  /** Rota única com início/fim exatamente no node da entrada oficial do Templo. */
+  function buildExactTempleEntranceRoute(NR, startIds, endIds, origin, dest, role) {
+    const gateId = role === "origin" ? startIds[0] : endIds[0];
+    if (!gateId) return [];
+    const node = state.navGraph.nodesById.get(gateId);
+    if (!node) return [];
+
+    const allowParking = tripAllowsParking(origin, dest);
+    const fromIds = role === "origin" ? [gateId] : startIds;
+    const toIds = role === "dest" ? [gateId] : endIds;
+
+    const originAtGate = role === "origin" ? {
+      ...origin,
+      anchor: gateId,
+      snap: { x: node.x, y: node.y },
+      x: node.x,
+      y: node.y,
+      iconX: node.x,
+      iconY: node.y,
+    } : origin;
+
+    const destAtGate = role === "dest" ? {
+      ...dest,
+      anchor: gateId,
+      snap: { x: node.x, y: node.y },
+      x: node.x,
+      y: node.y,
+      iconX: node.x,
+      iconY: node.y,
+    } : dest;
+
+    let found = NR.findRoutesForPoiPair(fromIds, toIds, state.navGraph, {
+      preference: "shortest",
+      avoidParking: !allowParking,
+      walkingSpeedMps: state.walkingSpeedMps || 1.2,
+    });
+    if (!found.length) {
+      found = NR.findRoutesForPoiPair(fromIds, toIds, state.navGraph, {
+        preference: "shortest",
+        avoidParking: false,
+        walkingSpeedMps: state.walkingSpeedMps || 1.2,
+      });
+    }
+    if (!found.length) return [];
+
+    const best = found[0];
+    const nodeIds = best.nodeIds || [];
+    if (role === "origin" && nodeIds[0] !== gateId) return [];
+    if (role === "dest" && nodeIds[nodeIds.length - 1] !== gateId) return [];
+
+    const points = appendPoiEndpoints(
+      best.points?.length ? best.points : [{ x: node.x, y: node.y }],
+      originAtGate,
+      destAtGate
     );
+    if (points.length < 2) return [];
+
+    let length = 0;
+    for (let i = 1; i < points.length; i++) length += dist(points[i - 1], points[i]);
+    const mpu = getMetersPerUnit();
+    const meshLen = (best.points || []).reduce((s, p, i, a) => (i ? s + dist(a[i - 1], p) : 0), 0);
+    const spurExtra = Math.max(0, length - meshLen);
+
+    return [{
+      points,
+      length: mpu > 0 ? (best.distanceMeters / mpu) + spurExtra : length,
+      distanceMeters: (best.distanceMeters || 0) + spurExtra * mpu,
+      nodeIds: best.nodeIds,
+      edgeIds: best.edgeIds,
+      rank: 1,
+      label: role === "origin"
+        ? `Saindo: ${originAtGate.searchLabel || originAtGate.name}`
+        : (destAtGate.searchLabel || destAtGate.name),
+      kind: "templo",
+      entranceId: gateId,
+      fromJson: true,
+    }];
+  }
+
+  /** Rotas genéricas Templo → uma opção por entrada (máx. 5). */
+  function routesForGenericTemple(NR, startIds, endIds, origin, dest, allowParking, role) {
+    if (role === "dest") {
+      return routesViaTempleEntrances(NR, startIds, origin, dest, allowParking);
+    }
+    const gates = templeEntranceList();
+    const collected = [];
+    for (const gate of gates) {
+      if (!state.navGraph.nodesById.has(gate.id)) continue;
+      const node = state.navGraph.nodesById.get(gate.id);
+      const originAtGate = {
+        ...origin,
+        anchor: gate.id,
+        snap: { x: node.x, y: node.y },
+        x: node.x,
+        y: node.y,
+        iconX: node.x,
+        iconY: node.y,
+      };
+      let found = NR.findRoutesForPoiPair([gate.id], endIds, state.navGraph, {
+        preference: "shortest",
+        avoidParking: !allowParking,
+        walkingSpeedMps: state.walkingSpeedMps || 1.2,
+      });
+      if (!found.length) {
+        found = NR.findRoutesForPoiPair([gate.id], endIds, state.navGraph, {
+          preference: "shortest",
+          avoidParking: false,
+          walkingSpeedMps: state.walkingSpeedMps || 1.2,
+        });
+      }
+      if (!found.length) continue;
+      const best = found[0];
+      if ((best.nodeIds || [])[0] !== gate.id) continue;
+      const points = appendPoiEndpoints(best.points, originAtGate, dest);
+      if (points.length < 2) continue;
+      let length = 0;
+      for (let i = 1; i < points.length; i++) length += dist(points[i - 1], points[i]);
+      const mpu = getMetersPerUnit();
+      collected.push({
+        points,
+        length: mpu > 0 ? best.distanceMeters / mpu : length,
+        distanceMeters: best.distanceMeters,
+        nodeIds: best.nodeIds,
+        edgeIds: best.edgeIds,
+        rank: collected.length + 1,
+        label: `Saindo: ${gate.label}`,
+        kind: "templo",
+        entranceId: gate.id,
+        fromJson: true,
+      });
+    }
+    collected.sort((a, b) => a.length - b.length);
+    collected.forEach((r, i) => { r.rank = i + 1; });
+    return collected.slice(0, 5);
   }
 
   /** Rotas até o templo: uma opção por entrada do estabelecimento. */
@@ -3062,7 +3423,6 @@
     for (const gate of gates) {
       const node = state.navGraph.nodesById.get(gate.id);
       if (!node) continue;
-      // dest “virtual” na porta — pin e fim da rota na entrada
       const destAtGate = {
         ...dest,
         anchor: gate.id,
@@ -3079,7 +3439,6 @@
         avoidParking: !allowParking,
         walkingSpeedMps: state.walkingSpeedMps || 1.2,
       });
-      // acessos sul do templo passam por zona marcada como estacionamento
       if (!found.length) {
         found = NR.findRoutesForPoiPair(startIds, [gate.id], state.navGraph, {
           preference: "shortest",
@@ -3090,6 +3449,9 @@
       if (!found.length) continue;
 
       const best = found[0];
+      const nodeIds = best.nodeIds || [];
+      if (nodeIds[nodeIds.length - 1] !== gate.id) continue;
+
       const sig = (best.edgeIds || []).join(">");
       if (sig && seenSig.has(sig)) continue;
       if (sig) seenSig.add(sig);
@@ -3129,13 +3491,37 @@
 
     let startIds = resolveNavNodeIds(origin, origin.id === "__here__" ? "here" : "origin");
     let endIds = resolveNavNodeIds(dest, "dest");
+    const GFRM = gfr();
 
-    // se o POI não tem nodeId no JSON, ancora no nó mais próximo do grafo
-    if (!startIds.length) {
+    if (GFRM?.isGenericGroundDestination(dest) || (isTemplePoi(dest) && !isTempleEntrancePoi(dest))) return [];
+    if (GFRM?.isGenericGroundDestination(origin) || (isTemplePoi(origin) && !isTempleEntrancePoi(origin))) return [];
+
+    if (isTempleEntrancePoi(dest)) {
+      if (!startIds.length && !GFRM?.isMappedL00Poi(origin, poiRawKey)) {
+        const id = NR.nearestNodeId(poiIcon(origin) || origin, state.navGraph, { level: poiLevel(origin) });
+        if (id) startIds = [id];
+      }
+      if (!startIds.length || !endIds.length) return [];
+      const routes = buildExactTempleEntranceRoute(NR, startIds, endIds, origin, dest, "dest");
+      if (routes.length) return finalizePackedRoutes(routes, NR, origin, dest);
+      return [];
+    }
+    if (isTempleEntrancePoi(origin)) {
+      if (!endIds.length && !GFRM?.isMappedL00Poi(dest, poiRawKey)) {
+        const id = NR.nearestNodeId(poiIcon(dest) || dest, state.navGraph, { level: poiLevel(dest) });
+        if (id) endIds = [id];
+      }
+      if (!startIds.length || !endIds.length) return [];
+      const routes = buildExactTempleEntranceRoute(NR, startIds, endIds, origin, dest, "origin");
+      if (routes.length) return finalizePackedRoutes(routes, NR, origin, dest);
+      return [];
+    }
+
+    if (!startIds.length && !GFRM?.isMappedL00Poi(origin, poiRawKey)) {
       const id = NR.nearestNodeId(poiIcon(origin) || origin, state.navGraph, { level: poiLevel(origin) });
       if (id) startIds = [id];
     }
-    if (!endIds.length) {
+    if (!endIds.length && !GFRM?.isMappedL00Poi(dest, poiRawKey)) {
       const id = NR.nearestNodeId(poiIcon(dest) || dest, state.navGraph, { level: poiLevel(dest) });
       if (id) endIds = [id];
     }
@@ -3153,12 +3539,11 @@
       dest.snap = { x: n.x, y: n.y };
     }
 
-    const allowParking = tripAllowsParking(origin, dest);
-
     const oLvl = poiLevel(origin);
     const dLvl = poiLevel(dest);
+    const allowParking = tripAllowsParking(origin, dest);
 
-    if (routeInvolvesBasementTransfer(oLvl, dLvl)) {
+    if (routeInvolvesBasementTransfer(oLvl, dLvl) && !isTemplePoi(dest) && !isTemplePoi(origin)) {
       const narnia = buildBasementNarniaRoutes(NR, startIds, endIds, origin, dest);
       if (narnia.length) return finalizePackedRoutes(narnia, NR, origin, dest);
     }
@@ -3171,61 +3556,6 @@
     if (isCfToJardimPair(origin, dest)) {
       const cfRoutes = buildCfJardimRouteOptions(NR, origin, dest);
       if (cfRoutes.length) return cfRoutes;
-    }
-
-    // destino = Templo → opções por cada entrada + rota por fora (se houver)
-    if (isTemplePoi(dest)) {
-      let viaDoors = routesViaTempleEntrances(NR, startIds, origin, dest, allowParking);
-      viaDoors = appendNamedExternalOptions(NR, startIds, endIds, origin, dest, viaDoors);
-      if (viaDoors.length) return finalizePackedRoutes(viaDoors, NR, origin, dest);
-    }
-    // origem = Templo → sai por cada entrada
-    if (isTemplePoi(origin)) {
-      const gates = templeEntranceList();
-      let flipped = [];
-      for (const gate of gates) {
-        if (!state.navGraph.nodesById.has(gate.id)) continue;
-        const node = state.navGraph.nodesById.get(gate.id);
-        const originAtGate = {
-          ...origin,
-          anchor: gate.id,
-          snap: { x: node.x, y: node.y },
-          x: node.x, y: node.y,
-          iconX: node.x, iconY: node.y,
-        };
-        let found = NR.findRoutesForPoiPair([gate.id], endIds, state.navGraph, {
-          preference: "shortest",
-          avoidParking: !allowParking,
-          walkingSpeedMps: state.walkingSpeedMps || 1.2,
-        });
-        if (!found.length) {
-          found = NR.findRoutesForPoiPair([gate.id], endIds, state.navGraph, {
-            preference: "shortest",
-            avoidParking: false,
-            walkingSpeedMps: state.walkingSpeedMps || 1.2,
-          });
-        }
-        if (!found.length) continue;
-        const best = found[0];
-        const points = appendPoiEndpoints(best.points, originAtGate, dest);
-        if (points.length < 2) continue;
-        let length = 0;
-        for (let i = 1; i < points.length; i++) length += dist(points[i - 1], points[i]);
-        const mpu = getMetersPerUnit();
-        flipped.push({
-          points,
-          length: mpu > 0 ? best.distanceMeters / mpu : length,
-          distanceMeters: best.distanceMeters,
-          nodeIds: best.nodeIds,
-          edgeIds: best.edgeIds,
-          label: `Saindo: ${gate.label}`,
-          kind: "templo",
-          entranceId: gate.id,
-          fromJson: true,
-        });
-      }
-      flipped = appendNamedExternalOptions(NR, startIds, endIds, origin, dest, flipped);
-      if (flipped.length) return finalizePackedRoutes(flipped, NR, origin, dest);
     }
 
     const pack = (routes) => {
@@ -3410,10 +3740,13 @@
   function scopeLayerClasses(root, defsNode, prefix) {
     if (!prefix || !root) return defsNode;
     const rename = (name) => (/^cls-\d+$/i.test(name) ? `${prefix}-${name}` : name);
-    root.querySelectorAll("[class]").forEach((el) => {
-      const next = el.getAttribute("class").split(/\s+/).filter(Boolean).map(rename).join(" ");
+    const renameElClasses = (el) => {
+      const raw = el.getAttribute("class");
+      if (!raw) return;
+      const next = raw.split(/\s+/).filter(Boolean).map(rename).join(" ");
       el.setAttribute("class", next);
-    });
+    };
+    root.querySelectorAll("[class]").forEach(renameElClasses);
     if (!defsNode) return null;
     const scoped = defsNode.cloneNode(true);
     scoped.querySelectorAll("style").forEach((styleEl) => {
@@ -3422,6 +3755,8 @@
         `.${prefix}-cls-$1`
       );
     });
+    // símbolos (<use href="#TEMPLO">) também precisam do prefixo — senão herdam .cls-* do background
+    scoped.querySelectorAll("[class]").forEach(renameElClasses);
     return scoped;
   }
 
@@ -3533,10 +3868,16 @@
         { key: "infoTextos", targetId: T.infoTextos, sourceIds: ["_07_txt_info", T.infoTextos], classPrefix: "info" },
       ];
       for (const { key, targetId, sourceIds, classPrefix } of replacements) {
-        const current = layerById(svg, targetId);
         const replacement = extractLayer(sources[key], sourceIds, classPrefix);
-        if (!current || !replacement) {
-          throw new Error(`Camada não encontrada: ${key} (${targetId})`);
+        if (!replacement) {
+          throw new Error(`Camada não encontrada: ${key} (fonte: ${sourceIds.join(", ")})`);
+        }
+        let current = layerById(svg, targetId);
+        // background 2026 não inclui placeholders vazios — cria se necessário
+        if (!current) {
+          current = document.createElementNS(NS, "g");
+          current.setAttribute("id", targetId);
+          svg.appendChild(current);
         }
         // mantém o id esperado pelo host (compatível com layers.visible)
         replacement.setAttribute("id", targetId);
@@ -4370,6 +4711,44 @@
    * Ancora o local na ENTRADA: mapa explícito → nome → node oficial livre → edge.
    */
   function snapToEntrance(p, excludeIds) {
+    const GFRM = gfr();
+    if (GFRM && (p?.officialAccessNodeId || p?.templeEntranceNodeId || p?.graphNodeId)) {
+      const official = GFRM.resolveOfficialNodeId(p, state.navGraph, G.nodes, G.adj);
+      if (official?.graphNodeId) {
+        const node = state.navGraph?.nodesById?.get(official.graphNodeId) || G.nodes?.[official.graphNodeId];
+        if (node) {
+          return {
+            id: official.graphNodeId,
+            x: node.x,
+            y: node.y,
+            d: 0,
+            how: "ground-floor-official",
+          };
+        }
+      }
+      if (official?.unavailable) {
+        toast("Este acesso está temporariamente indisponível para cálculo de rota.");
+      }
+      return { id: null };
+    }
+    if (p?.templeEntranceNodeId || p?.graphNodeId) {
+      const base = p.templeEntranceNodeId || nodeIdBase(p.graphNodeId);
+      const resolved = p.graphNodeId || resolveGraphNodeId(base);
+      if (resolved && graphNodeHasEdges(resolved)) {
+        const node = state.navGraph?.nodesById?.get(resolved) || G.nodes?.[resolved];
+        if (node) {
+          return {
+            id: resolved,
+            x: node.x,
+            y: node.y,
+            d: 0,
+            how: "temple-entrance",
+          };
+        }
+      }
+      console.warn(`Entrada do Templo indisponível: node ${base} não encontrado ou sem conexão válida.`);
+      return { id: null };
+    }
     const banned = excludeIds instanceof Set ? excludeIds : new Set(excludeIds || []);
     const zone = poiToleranceZone(p);
     const maxD = tol("entranceTol", zone);
@@ -5753,6 +6132,7 @@
     if (state[which]) return state[which];
     const raw = ((which === "origin" ? el.originInput : el.destInput).value || "").trim();
     if (!raw) return null;
+    if (isTempleSearchQuery(raw)) return buildGenericTemplePoi();
     const q = normSearch(raw);
     const hits = (G.pois || [])
       .filter((p) => isSearchablePoi(p))
@@ -6577,6 +6957,17 @@
 
     if (!state.origin) { toast("Escolha onde você está."); openField("origin"); return; }
     if (!state.dest) { toast("Escolha para onde você quer ir."); openField("dest"); return; }
+    const GFRM = gfr();
+    if (GFRM?.isGenericGroundDestination(state.origin)) {
+      toast("Selecione um acesso oficial antes de traçar a rota.");
+      openField("origin");
+      return;
+    }
+    if (GFRM?.isGenericGroundDestination(state.dest)) {
+      toast("Selecione um acesso oficial antes de traçar a rota.");
+      openField("dest");
+      return;
+    }
     if (state.origin.id === state.dest.id) {
       toast("Origem e destino são iguais."); return;
     }
@@ -6626,6 +7017,8 @@
     const n = state.routeOptions.length;
     if (isCfToJardimPair(state.origin, state.dest) && n >= 2) {
       toast(`${n} rotas CF → Jardim — toque nas opções abaixo para alternar.`);
+    } else if (isTemplePoi(state.dest) && !isTempleEntrancePoi(state.dest) && n >= 2) {
+      toast(`${n} entradas do Templo — toque nas opções abaixo para escolher.`);
     } else {
       toast(n > 1
         ? `${n} rotas — Rota 1 (mais curta) selecionada.`
@@ -6641,6 +7034,7 @@
     const route = options[idx];
     state.route = route;
     setRouteVisualCompleted(false);
+    syncTripPoiFromTempleRoute(route);
 
     const oLvl = poiLevel(state.origin);
     const dLvl = poiLevel(state.dest);
@@ -6679,11 +7073,13 @@
       }
       if (multi) {
         if (routeInvolvesBasementTransfer(oLvl, dLvl)) {
-          const startHint = isBasementFloor(oLvl)
-            ? `Comece em ${floorTitle(oLvl)}: siga até a ${narniaGateLabel(oLvl)} (saída do subsolo).`
-            : !isAdmFloor(oLvl)
-              ? "Comece pelo mapa do Térreo (L00)."
-              : `Comece pelo mapa de ${floorTitle(oLvl)}.`;
+          const startHint = isBasementFloor(oLvl) && viewLevel === "L00"
+            ? `Trecho no Térreo: da Porta de Nárnia até ${state.dest.searchLabel || state.dest.name}. Troque para ${formatFloorTag(oLvl)} para ver o caminho no subsolo.`
+            : isBasementFloor(oLvl)
+              ? `Comece em ${floorTitle(oLvl)}: siga até a ${narniaGateLabel(oLvl)} (saída do subsolo).`
+              : !isAdmFloor(oLvl)
+                ? "Comece pelo mapa do Térreo (L00)."
+                : `Comece pelo mapa de ${floorTitle(oLvl)}.`;
           toast(`${startHint} Ao entrar na Porta de Nárnia, o mapa muda de andar. Troque o andar para ver cada trecho.`);
         } else if (routeUsesLateralStairs(route)) {
           const arrive = stairHub(dLvl);
@@ -6718,10 +7114,15 @@
     }
 
     el.routePick.hidden = false;
+    const templeTrip = (isTemplePoi(state.dest) || isTemplePoi(state.origin))
+      && options.length >= 2
+      && options.every((r) => r.kind === "templo");
     if (el.routePickLabel) {
       el.routePickLabel.textContent = cfForced
         ? "Opções de rota · CF → Jardim"
-        : "Opções de rota";
+        : templeTrip
+          ? "Opções de rota · Templo"
+          : "Opções de rota";
     }
     if (el.routePickCount) {
       el.routePickCount.hidden = options.length < 2;
@@ -6774,6 +7175,11 @@
   }
 
   function setField(which, poi) {
+    if (!poi) return;
+    const GFRM = gfr();
+    if (GFRM && !GFRM.isGenericGroundDestination(poi)) {
+      poi = GFRM.enrichPoiWithOfficialNode({ ...poi }, state.navGraph, G.nodes, G.adj, poiRawKey);
+    }
     // destino em outro andar sem origem → elevador do andar atual
     if (which === "dest" && !state.origin && poi) {
       const destLvl = poiLevel(poi);
@@ -6831,8 +7237,20 @@
     const q = normSearch(effectiveQuery);
     // Sem texto: não monta centenas de sugestões (evita salto de scroll no mobile e cursor resetado).
     if (!q) return [];
+    const GFRM = gfr();
+    if (GFRM) {
+      const { hint, items } = GFRM.search(effectiveQuery, state.navGraph, G.nodes, G.adj);
+      if (items.length) {
+        state.groundFloorSearchHint = hint;
+        return items;
+      }
+    }
+    state.groundFloorSearchHint = null;
+    if (isTempleSearchQuery(effectiveQuery)) {
+      return [buildGenericTemplePoi()];
+    }
     const onCampus = isCampusFloor(state.activeLevel);
-    return (G.pois || []).filter((p) => {
+    const results = (G.pois || []).filter((p) => {
       enrichPoiMeta(p);
       if (!isSearchablePoi(p)) return false;
       const poiLvl = p.level || "L00";
@@ -6853,6 +7271,10 @@
       .map((p) => ({ p, score: poiSearchScore(p, effectiveQuery) }))
       .sort((a, b) => b.score - a.score || (a.p.searchLabel || a.p.name).localeCompare(b.p.searchLabel || b.p.name, "pt-BR"))
       .map((x) => x.p);
+    if (/\btemp|templo|igreja\b/.test(q) || (q.length >= 2 && "templo".startsWith(q))) {
+      return [buildGenericTemplePoi(), ...results.filter((p) => !isTemplePoi(p))];
+    }
+    return results;
   }
 
   /** Preserva posição do cursor após re-render da lista (scroll/layout no mobile resetava o caret). */
@@ -6892,6 +7314,9 @@
     if (which === "origin") {
       html += `<li data-here="1" aria-selected="false"><span class="s-ico"><svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></span><span><span class="s-name">Estou aqui (marcar no mapa)</span><span class="s-cat">Usar minha posição</span></span></li>`;
     }
+    if (state.groundFloorSearchHint && items.length && items[0]?.officialAccessNodeId) {
+      html += `<li class="s-hint" role="presentation"><span class="s-cat">${state.groundFloorSearchHint}</span></li>`;
+    }
     if (!items.length && which !== "origin") {
       listEl.innerHTML = normSearch(query)
         ? `<li class="s-empty">Nenhum local encontrado para “${String(query).trim()}”.</li>`
@@ -6924,8 +7349,9 @@
     listEl.querySelectorAll("li[data-id]").forEach((li) => {
       li.addEventListener("mousedown", (e) => {
         e.preventDefault();
-        const poi = G.pois.find((p) => p.id === li.dataset.id);
-        setField(which, poi);
+        const poi = items.find((p) => p.id === li.dataset.id)
+          || (G.pois || []).find((p) => p.id === li.dataset.id);
+        if (poi) setField(which, poi);
       });
     });
     const hereLi = listEl.querySelector("li[data-here]");

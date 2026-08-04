@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "236",
+    appBuild: "245",
     showAllInfoTexts: true,
     // UI técnica (calibração / camadas SVG) só com ?calib=1 ou ?dev=1
     isDev: /(?:\?|&)(?:calib|dev)=1(?:&|$)/.test(location.search),
@@ -111,6 +111,7 @@
     herePoiSnapRadius: 70,
     // POIs removidos do mapa — bloqueia ressurgência via cache SVG antigo
     hiddenPoiRawIds: [
+      "P000_templo",
       "P000E2_entrada_02_principal_templo",
       "P000E3_entrada_lateral_03_templo",
       "P000E4_entrada_lateral_02_templo",
@@ -207,6 +208,11 @@
     routeOptionCaps: [
       {
         a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
+        b: ["P000_templo"],
+        max: 5,
+      },
+      {
+        a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
         b: ["min_esportes"],
         max: 3,
       },
@@ -229,10 +235,13 @@
       P020_espaco_servir: { x: 207, y: 700 },
       P000E1_entrada_lateral_01_templo: { x: 321.89, y: 580.53 },
     },
-    // entradas do templo — opções de rota “por dentro” do estabelecimento
+    // entradas oficiais do Templo — nodeId = ID-base (L00_node_NNNN)
     templeEntrances: [
-      { id: "L00_node_0088__entrada_templo_01", label: "Entrada lateral 01 templo" },
-      { id: "L00_node_0072_entrada_templo_02", label: "Entrada 02 principal templo" },
+      { nodeId: "L00_node_0088", label: "Templo — Entrada 1" },
+      { nodeId: "L00_node_0072", label: "Templo — Entrada 2" },
+      { nodeId: "L00_node_0033", label: "Templo — Entrada 3" },
+      { nodeId: "L00_node_0015", label: "Templo — Entrada 4" },
+      { nodeId: "L00_node_0018", label: "Templo — Entrada 5" },
     ],
     // rotas opcionais nomeadas (par de POIs → via nó(s) externo(s))
     namedExternalRoutes: [
@@ -276,7 +285,6 @@
           "P017_espaco_acolher_ceara",
           "P019_banheiro_familia",
           "P002_capela",
-          "P005_centro_de_formacao",
           "P001_entrada_principal_toldo",
           "P015_bazar_abasc",
           "P018_abasc",
@@ -293,37 +301,6 @@
         endNodes: ["L00_node_0029_recepcao"],
         label: "Pelo jardim",
         avoidParking: false,
-      },
-      // CF / Sala de Oração RGO → Templo: sai pela lateral Av. Batel e reentra na entrada principal
-      {
-        a: [
-          "P005_centro_de_formacao",
-          "P004_sala_de_oracao_RGO",
-        ],
-        b: [
-          "P000_templo",
-          "P027_elevador_templo",
-          "escada_mesanino_01",
-          "escada_mesanino_02",
-          "L01_node_0001_elevador",
-          "L02_node_0001_elevador",
-          "L03_node_0001",
-          "L04_node_0001_elevador",
-          "L05_node_0001_elevador",
-          "L06_node_0033_elevador",
-        ],
-        via: [
-          "L00_node_0032",
-          "L00_node_0086_entrada_av_batel_02",
-          "L00_node_0083",
-          "L00_node_0082_espaco_conexao",
-          "L00_node_0081_elevador_t",
-        ],
-        endNodes: ["L00_node_0084", "L00_node_0088__entrada_templo_01"],
-        label: "Entrada/saída · Av. Batel",
-        avoidParking: false,
-        allowParking: true,
-        slot: 4,
       },
       // CF / RGO → Jardim / Espaço Servir: lateral Av. Batel (sem dar volta ao templo)
       {
