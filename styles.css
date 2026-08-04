@@ -357,7 +357,8 @@ body {
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   direction: ltr;
   text-align: left;
-  unicode-bidi: normal;
+  unicode-bidi: plaintext;
+  writing-mode: horizontal-tb;
 }
 .field__input:focus { outline: none; border-color: color-mix(in srgb, var(--brand) 70%, white); background: var(--field-bg-focus); box-shadow: var(--ring); }
 .field__input::placeholder { color: var(--ink-dim); }

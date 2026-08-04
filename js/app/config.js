@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "245",
+    appBuild: "259",
     showAllInfoTexts: true,
     // UI técnica (calibração / camadas SVG) só com ?calib=1 ou ?dev=1
     isDev: /(?:\?|&)(?:calib|dev)=1(?:&|$)/.test(location.search),
@@ -60,6 +60,12 @@
       parkingMap: [
         "_03_background_estacionamento_Map",
         "03_background_estacionamento_Map",
+      ],
+      pois: [
+        "_08_info_icon_poi",
+        "08_info_icon_poi",
+        "_08_info_icon",
+        "08_info_icon",
       ],
     },
     metersPerUnit: 0.35, // fallback até calibração do Batistério (6,80 m)
@@ -174,10 +180,11 @@
     },
     // rótulos oficiais na busca (podem diferir do ícone no mapa)
     poiDisplayNames: {
-      P005_centro_de_formacao: "Centro de Formação CF",
+      P005_centro_de_formacao: "Centro de Formação | CF",
       P007T_area_kids_t: "Área Kids T",
       P028_estacionamento_moto: "Estacionamento Moto",
       P020_espaco_servir: "Espaço Servir",
+      P010_espaco_conexao: "Espaço conexão",
       P000E1_entrada_lateral_01_templo: "Entrada lateral 01 templo",
       escada_mesanino_01: "Mezanino 1",
       escada_mesanino_02: "Mezanino 2",
@@ -194,6 +201,7 @@
       P000_templo: ["templo", "igreja"],
       P000E1_entrada_lateral_01_templo: ["templo", "entrada lateral 01 templo", "templo lateral 01"],
       P016_jardim: ["jardim"],
+      P010_espaco_conexao: ["espaco conexao", "espaço conexão", "conexao servir", "conexão servir"],
       P007T_area_kids_t: ["area kids t", "area kids terreo", "area kids térreo", "kids t", "area kids"],
       P028_estacionamento_moto: ["estacionamento moto", "estacionamento motos", "moto", "motos", "icon moto"],
       P020_espaco_servir: ["espaco servir", "espaço servir", "servir", "espaco servir b01", "espaço servir b01", "subsolo servir"],
@@ -220,6 +228,16 @@
         a: ["P005_centro_de_formacao"],
         b: ["P016_jardim"],
         max: 3,
+      },
+      {
+        a: ["P004_sala_de_oracao_RGO"],
+        b: ["P016_jardim"],
+        max: 3,
+      },
+      {
+        a: ["P004_sala_de_oracao_RGO"],
+        b: ["P010_espaco_conexao"],
+        max: 2,
       },
     ],
     // centro visual (planta local ADM) → pin de origem/destino nos andares internos
@@ -324,37 +342,65 @@
         avoidParking: false,
         allowParking: true,
       },
-      // CF → Jardim (opção 1): contorno leste pelo estacionamento e sul do templo
+      // CF / L00 → Jardim (opção 1): contorno leste — perímetro externo, sem voltas no estacionamento
       {
         a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
         b: ["P016_jardim"],
         via: [
-          "L00_node_0039",
-          "L00_node_0041_cf",
-          "L00_node_0008",
-          "L00_node_0027",
+          "L00_node_0043",
+          "L00_node_0044",
+          "L00_node_0046",
+          "L00_node_0031",
+          "L00_node_0065",
+          "L00_node_0054_sevenpass",
+          "L00_node_0056",
+          "L00_node_0032",
+          "L00_node_0022_estacionamento_01",
+          "L00_node_0034",
         ],
         endNodes: ["L00_node_0037_jardim"],
-        label: "Contorno leste · estacionamento",
+        label: "Contorno leste do templo",
         avoidParking: false,
         allowParking: true,
         slot: 2,
       },
-      // CF → Jardim (opção 2): pelo corredor entre prédios e lateral oeste do templo
+      // CF / L00 → Jardim (opção 2): corredor do estabelecimento (sem entrar nas salas)
       {
         a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
         b: ["P016_jardim"],
         via: [
-          "L00_node_0039",
-          "L00_node_0041_cf",
-          "L00_node_0042_cf",
+          "L00_node_0046",
+          "L00_node_0031",
+          "L00_node_0065",
           "L00_node_0029_recepcao",
+          "L00_node_0034",
         ],
         endNodes: ["L00_node_0037_jardim"],
-        label: "Pelo corredor · lateral oeste",
+        label: "Pelo estabelecimento (RGO)",
         avoidParking: false,
         allowParking: true,
         slot: 3,
+      },
+      // RGO → Espaço conexão: corredor interno (estabelecimento → recepção → conexão)
+      {
+        a: ["P004_sala_de_oracao_RGO"],
+        b: ["P010_espaco_conexao"],
+        via: [
+          "L00_node_0046",
+          "L00_node_0048",
+          "L00_node_0049",
+          "L00_node_0031",
+          "L00_node_0065",
+          "L00_node_0067",
+          "L00_node_0073",
+          "L00_node_0077",
+          "L00_node_0084",
+        ],
+        endNodes: ["L00_node_0082_espaco_conexao"],
+        label: "Pelo corredor interno",
+        avoidParking: false,
+        allowParking: true,
+        slot: 2,
       },
       // Estacionamento conveniado → Templo: lateral Av. Batel (sem desvio pelo CF)
       {
@@ -490,7 +536,11 @@
       "L00_B01_E_escada_batisterio",
     ],
     elevatorHubs: {
-      L00: { nodeId: "L00_node_0077", label: "Elevador Templo" },
+      L00: {
+        nodeId: "L00_node_0081_elevador_t",
+        transferNodeId: "L00_node_0077",
+        label: "Elevadores T",
+      },
       L01: { nodeId: "L01_node_0001_elevador", label: "Elevador (1º andar)" },
       L02: { nodeId: "L02_node_0001_elevador", label: "Elevador (2º andar)" },
       L03: { nodeId: "L03_node_0001", label: "Elevador (3º andar)" },
@@ -498,9 +548,13 @@
       L05: { nodeId: "L05_node_0001_elevador", label: "Elevador (5º andar)" },
       L06: { nodeId: "L06_node_0033_elevador", label: "Elevador (6º andar)" },
     },
-    // hubs da escada lateral — L00 = ícone Escadas ao lado do Berçário START
+    // hubs da escada lateral — L00 = ícone Escadas (Hall do Templo)
     stairHubs: {
-      L00: { nodeId: "L00_node_0075_bercario_start", label: "Escadas (Berçário START)" },
+      L00: {
+        nodeId: "L00_node_0079_escada_lateral_",
+        transferNodeId: "L00_node_0075_bercario_start",
+        label: "Escadas laterais T",
+      },
       L01: { nodeId: "L01_node_0040_escada_lateral", label: "Escada lateral (1º andar)" },
       L02: { nodeId: "L02_node_0003_escada_laral", label: "Escada lateral (2º andar)" },
       L03: { nodeId: "L03_node_0003", label: "Escada lateral (3º andar)" },

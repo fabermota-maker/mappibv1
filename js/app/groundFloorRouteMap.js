@@ -7,6 +7,10 @@
 
   const LEVEL = "L00";
 
+  function l00Idx() {
+    return global.L00PoiLayerIndex || null;
+  }
+
   /** @type {Array<object>} */
   const FLOOR_GROUND_DESTINATIONS = [
     {
@@ -71,16 +75,16 @@
     },
     {
       id: "conexaoServir",
-      label: "Conexão Servir",
+      label: "Espaço conexão",
       nodeId: "L00_node_0082",
-      searchTerms: ["conexao servir", "conexão servir", "espaco conexao", "espaço conexão"],
+      searchTerms: ["espaco conexao", "espaço conexão", "conexao servir", "conexão servir"],
       poiRawIds: ["P010_espaco_conexao"],
     },
     {
       id: "escadaLateral",
-      label: "Escada Lateral",
-      nodeId: "L00_node_0079",
-      searchTerms: ["escada lateral"],
+      label: "Escadas laterais T",
+      nodeId: "L00_node_0079_escada_lateral_",
+      searchTerms: ["escada lateral", "escadas laterais", "escadas"],
     },
     {
       id: "escadaEmergencia",
@@ -90,9 +94,9 @@
     },
     {
       id: "elevadores",
-      label: "Elevadores",
-      nodeId: "L00_node_0081",
-      searchTerms: ["elevadores", "elevador templo", "elevador do templo"],
+      label: "Elevadores T",
+      nodeId: "L00_node_0081_elevador_t",
+      searchTerms: ["elevadores", "elevador templo", "elevador do templo", "elevadores t"],
       poiRawIds: ["P027_elevador_templo"],
     },
     {
@@ -271,13 +275,16 @@
     },
     {
       id: "centroFormacao",
-      label: "Centro de Formação",
-      requiresAccessSelection: true,
-      selectionHint: "Escolha um acesso do Centro de Formação",
-      searchTerms: ["centro de formacao", "centro de formação", "centro formacao", "formacao cf", "cf"],
-      accesses: [
-        { label: "Centro de Formação — Acesso 1", nodeId: "L00_node_0042" },
-        { label: "Centro de Formação — Acesso 2", nodeId: "L00_node_0041" },
+      label: "Centro de Formação | CF",
+      nodeId: "L00_node_0042",
+      searchTerms: [
+        "centro de formacao",
+        "centro de formação",
+        "centro formacao",
+        "formacao cf",
+        "cf",
+        "centro de formacao cf",
+        "centro formacao cf",
       ],
       poiRawIds: ["P005_centro_de_formacao"],
     },
@@ -523,9 +530,18 @@
     const q = String(query || "").trim();
     if (!q) return { hint: null, items: [] };
 
+    const L00I = l00Idx();
+    if (L00I) {
+      const fromLayer = L00I.search(q, navGraph, gNodes, gAdj);
+      if (fromLayer.items.length) return fromLayer;
+    }
+
     for (const area of FLOOR_GROUND_DESTINATIONS) {
       if (!area.requiresAccessSelection || !matchesArea(q, area)) continue;
       if (isSpecificAccessQuery(q, area)) continue;
+      if (area.id === "templo") {
+        return { hint: null, items: [buildGenericAreaPoi(area)] };
+      }
       const accesses = getValidatedAccesses(area, navGraph, gNodes, gAdj);
       if (accesses.length) {
         return {
@@ -567,6 +583,7 @@
 
   function isOfficialAccessPoi(poi) {
     if (!poi) return false;
+    if (l00Idx()?.hasOfficialLayerNode(poi)) return true;
     return !!(poi.officialAccessNodeId || poi.templeEntranceNodeId || poi.graphNodeId && poi.groundFloorAreaId);
   }
 
@@ -576,13 +593,20 @@
 
   function isMappedL00Poi(poi, poiRawKeyFn) {
     if (!poi) return false;
-    if (poi.groundFloorAreaId || poi.officialAccessNodeId) return true;
+    if (l00Idx()?.hasOfficialLayerNode(poi)) return true;
+    if (poi.fromLayerIndex || poi.groundFloorAreaId || poi.officialAccessNodeId) return true;
     const raw = poiRawKeyFn ? poiRawKeyFn(poi) : (poi.rawId || poi.id || "");
-    return !!areaForPoiRaw(raw);
+    return !!areaForPoiRaw(raw) || !!l00Idx()?.parsePoiLayerName(raw);
   }
 
   function enrichPoiWithOfficialNode(poi, navGraph, gNodes, gAdj, poiRawKeyFn) {
-    if (!poi || isOfficialAccessPoi(poi) || isGenericGroundDestination(poi)) return poi;
+    if (!poi || isGenericGroundDestination(poi)) return poi;
+    const L00I = l00Idx();
+    if (L00I) {
+      L00I.enrichPoi(poi, navGraph, gNodes, gAdj);
+      if (L00I.hasOfficialLayerNode(poi)) return poi;
+    }
+    if (isOfficialAccessPoi(poi)) return poi;
     const raw = poiRawKeyFn ? poiRawKeyFn(poi) : (poi.rawId || "");
     const area = areaForPoiRaw(raw);
     if (!area || area.requiresAccessSelection) return poi;
@@ -596,6 +620,10 @@
     poi.navNodeIds = [v.graphNodeId];
     if (v.x != null) {
       poi.snap = { x: v.x, y: v.y };
+      poi.iconX = v.x;
+      poi.iconY = v.y;
+      poi.x = v.x;
+      poi.y = v.y;
     }
     return poi;
   }
@@ -603,6 +631,12 @@
   function resolveOfficialNodeId(poi, navGraph, gNodes, gAdj) {
     if (!poi) return null;
     if (isGenericGroundDestination(poi)) return { block: true };
+
+    const L00I = l00Idx();
+    if (L00I) {
+      const fromLayer = L00I.resolveOfficialNodeId(poi, navGraph, gNodes, gAdj);
+      if (fromLayer) return fromLayer;
+    }
 
     const base = poi.officialAccessNodeId || poi.templeEntranceNodeId || (poi.graphNodeId ? nodeIdBase(poi.graphNodeId) : null);
     if (!base) return null;
