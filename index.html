@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt-BR" data-theme="dark" data-build="258">
+<html lang="pt-BR" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=259" />
+  <!-- CSS/JS: versão lida de config.js via js/app/boot.js (não fixar ?v= aqui) -->
 </head>
 <body>
   <svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
@@ -32,7 +32,7 @@
     </defs>
   </svg>
   <div class="app-bg" aria-hidden="true">
-    <img class="app-bg__img" src="assets/background_street_map.svg?v=259" alt="" decoding="async" fetchpriority="low" />
+    <img class="app-bg__img" data-build-src="assets/background_street_map.svg" alt="" decoding="async" fetchpriority="low" />
   </div>
   <div class="app" id="app">
     <!-- ============ PAINEL LATERAL (glass) ============ -->
@@ -43,7 +43,7 @@
       <header class="panel__head">
         <div class="brand">
           <span class="brand__icon" aria-hidden="true">
-            <img class="brand__icon-img" src="assets/brand-map-pin.png?v=259" alt="" width="28" height="28" decoding="async" />
+            <img class="brand__icon-img" data-build-src="assets/brand-map-pin.png" alt="" width="28" height="28" decoding="async" />
           </span>
           <div>
             <h1 class="brand__title">Mapa Interativo</h1>
@@ -139,7 +139,7 @@
       <section class="summary" id="summary" hidden>
         <div class="summary__hero" id="summaryHero">
           <div class="summary__walk" aria-hidden="true">
-            <img class="summary__walk-ico walk-pictogram" src="assets/icon-walk-map.png?v=259" width="44" height="44" alt="" decoding="async" />
+            <img class="summary__walk-ico walk-pictogram" data-build-src="assets/icon-walk-map.png" width="44" height="44" alt="" decoding="async" />
           </div>
           <div class="summary__stats" id="summaryStats">
             <span class="summary__dist" id="summaryDist">—</span>
@@ -352,34 +352,13 @@
     </div>
   </div>
 
-  <script src="js/app/config.js?v=259"></script>
-  <script src="js/app/l00PoiLayerIndex.js?v=259"></script>
-  <script src="js/app/groundFloorRouteMap.js?v=259"></script>
-  <script src="js/app/moduleRegistry.js?v=259"></script>
-  <script src="js/app/deferredLoader.js?v=259"></script>
-  <script src="js/route-animation-config.js?v=259"></script>
-  <script src="js/map-nav-icons.js?v=259"></script>
-  <script src="js/calibration.js?v=259"></script>
-  <script src="js/navigation-router.js?v=259"></script>
-  <script src="js/navigation/graphLoader.js?v=259"></script>
-  <script src="js/navigation/pathfinding.js?v=259"></script>
-  <script src="js/calibration/calibrationController.js?v=259"></script>
-  <script src="js/accessibility/accessibilityController.js?v=259"></script>
-  <script src="js/app/mapController.js?v=259"></script>
-  <script src="js/app/floorController.js?v=259"></script>
-  <script src="js/app/poiController.js?v=259"></script>
-  <script src="js/app/routeController.js?v=259"></script>
-  <script src="js/app/interfaceController.js?v=259"></script>
-  <script src="js/geo-transform.js?v=259"></script>
-  <script src="js/pib-curitiba-location-config.js?v=259"></script>
-  <script src="js/geofence-service.js?v=259"></script>
-  <script src="js/gps-reading-collector.js?v=259"></script>
-  <script src="js/nearest-graph-point.js?v=259"></script>
-  <script src="js/route-snap-service.js?v=259"></script>
-  <script src="js/route-tracking-service.js?v=259"></script>
-  <script src="js/gps-route-orientation.js?v=259"></script>
-  <script src="js/gps-orientation.js?v=259"></script>
-  <!-- GPS ao vivo + puck: carregados sob demanda via PIBMapDeferred.loadGpsStack() -->
-  <script src="app.js?v=259"></script>
+  <script>
+    (function () {
+      var s = document.createElement("script");
+      s.src = "js/app/boot.js?_=" + Date.now();
+      s.async = false;
+      document.body.appendChild(s);
+    })();
+  </script>
 </body>
 </html>

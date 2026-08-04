@@ -180,6 +180,7 @@ body {
 }
 .brand__title { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.03em; }
 .brand__sub { margin: 3px 0 0; font-size: 13px; color: var(--ink-soft); font-weight: 500; }
+.build-tag { font-size: 11px; opacity: 0.55; font-weight: 500; }
 
 .panel__actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .panel__actions:empty { display: none; }
@@ -966,7 +967,7 @@ body.is-dev .calib-box:not([hidden]) { display: flex; }
 .svg-host #TEMPLO .cls-2,
 .svg-host symbol#TEMPLO .wall-cls-2,
 .svg-host symbol#TEMPLO .cls-2 {
-  opacity: 0.9 !important;
+  opacity: 0.5 !important;
 }
 .svg-host #_07_txt_info,
 .svg-host #_x30_7_x5F_txt_x5F_info {

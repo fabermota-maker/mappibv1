@@ -8,9 +8,13 @@
   let gpsPromise = null;
 
   function scriptUrl(src) {
-    const v = document.querySelector('script[src*="app.js"]')?.src?.match(/[?&]v=(\d+)/);
-    const q = v ? `?v=${v[1]}` : "";
-    return src.includes("?") ? src : `${src}${q}`;
+    const build = global.__PIB_BUILD__
+      || global.PIBMapConfig?.appBuild
+      || document.documentElement.dataset.build
+      || "";
+    if (!build) return src;
+    const sep = src.includes("?") ? "&" : "?";
+    return `${src}${sep}v=${encodeURIComponent(build)}`;
   }
 
   function loadScript(src) {

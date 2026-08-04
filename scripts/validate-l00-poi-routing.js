@@ -70,7 +70,7 @@ for (const t of tests) {
 
 const templo = L00I.search("Templo", navGraph, gNodes, gAdj);
 const temploNodes = (templo.items || []).map((p) => L00I.nodeIdBase(p.officialAccessNodeId || p.graphNodeId));
-const expectedTemple = ["L00_node_0088", "L00_node_0072", "L00_node_0033", "L00_node_0015", "L00_node_0018"];
+const expectedTemple = ["L00_node_0088", "L00_node_0072", "L00_node_0036", "L00_node_0015", "L00_node_0018"];
 const temploOk = expectedTemple.every((n) => temploNodes.includes(n)) && templo.items.length >= 5;
 console.log(`${temploOk ? "OK" : "FAIL"} — Templo multi-acesso: ${temploNodes.join(", ")}`);
 if (temploOk) passed++;

@@ -2,8 +2,15 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "259",
+    appBuild: "285",
     showAllInfoTexts: true,
+    /** URL com cache-bust automático (usa appBuild). */
+    appAssetUrl(path) {
+      const v = global.PIBMapConfig?.appBuild || global.__PIB_BUILD__ || "0";
+      if (!path) return path;
+      const sep = String(path).includes("?") ? "&" : "?";
+      return `${path}${sep}v=${encodeURIComponent(v)}`;
+    },
     // UI técnica (calibração / camadas SVG) só com ?calib=1 ou ?dev=1
     isDev: /(?:\?|&)(?:calib|dev)=1(?:&|$)/.test(location.search),
     svgFiles: {
@@ -113,7 +120,31 @@
       { poiId: "P005_centro_de_formacao", x0: 25, y0: 85, x1: 230, y1: 250 },
       { poiId: "P004_sala_de_oracao_RGO", x0: 25, y0: 85, x1: 230, y1: 250 },
       { poiId: "P020_espaco_servir", x0: 155, y0: 655, x1: 280, y1: 760 },
+      { poiId: "P016_jardim", x0: 80, y0: 720, x1: 220, y1: 840 },
     ],
+    /** Trecho oficial malha → ícone (POI edge) — rota e clique no ponto visível do mapa. */
+    poiRouteEdges: {
+      P020_espaco_servir: {
+        anchor: "L00_node_0035_espaco_servir",
+        meshEdgeIds: ["L00_edge_0037_node_0036_node_0035"],
+        icon: { x: 207, y: 715 },
+      },
+      P027_elevador_templo: {
+        anchor: "L00_node_0081_elevador_t",
+        meshEdgeIds: ["L00_edge_0045_node_0083_node_0081"],
+        icon: { x: 372.21, y: 485.59 },
+      },
+      L00_escadas_laterais_t: {
+        anchor: "L00_node_0079_escada_lateral_",
+        meshEdgeIds: ["L00_edge_0004_node_0079_node_0084"],
+        icon: { x: 397.22, y: 511.24 },
+      },
+      "gfr-escadaLateral": {
+        anchor: "L00_node_0079_escada_lateral_",
+        meshEdgeIds: ["L00_edge_0004_node_0079_node_0084"],
+        icon: { x: 397.22, y: 511.24 },
+      },
+    },
     herePoiSnapRadius: 70,
     // POIs removidos do mapa — bloqueia ressurgência via cache SVG antigo
     hiddenPoiRawIds: [
@@ -122,6 +153,17 @@
       "P000E3_entrada_lateral_03_templo",
       "P000E4_entrada_lateral_02_templo",
       "P000E5_entrada_01_principal_templo",
+    ],
+    /** POI oculto (sem ícone) — só ancora a direção da rota na malha oficial. */
+    hiddenRoutePois: [
+      {
+        rawId: "P000E4_templo_entrada_4_lateral_03",
+        name: "Templo — Entrada 4",
+        anchor: "L00_node_0036",
+        templeEntranceNodeId: "L00_node_0036",
+        iconCampus: { x: 251.73, y: 768.84 },
+        level: "L00",
+      },
     ],
     // nó de malha → POI exibido (corredor do Espaço Servir, não entrada do templo)
     navNodePoiMap: {
@@ -136,6 +178,7 @@
       P000_templo: "L00_node_0088__entrada_templo_01",
       P000E1_entrada_lateral_01_templo: "L00_node_0088__entrada_templo_01",
       P000E4_entrada_lateral_02_templo: "L00_node_0072_entrada_templo_02",
+      P000E4_templo_entrada_4_lateral_03: "L00_node_0036",
       P001_entrada_principal_toldo: "L00_node_0023",
       P002_capela: "L00_node_0068_capela",
       P003_estacionamento_01: "L00_node_0021_estacionamento_01",
@@ -164,6 +207,8 @@
       P025_banheiro_masculino_feminino: "L00_node_0062",
       P026_elevador_ginasio: "L00_node_0063_min_esporte",
       P027_elevador_templo: "L00_node_0081_elevador_t",
+      L00_escadas_laterais_t: "L00_node_0079_escada_lateral_",
+      "gfr-escadaLateral": "L00_node_0079_escada_lateral_",
       escada_mesanino_01: "L00_node_0089_escada_mesanino_01",
       escada_mesanino_02: "L00_node_0066_escada_mesanino_02",
       P028_estacionamento_moto: "L00_node_0002",
@@ -211,6 +256,9 @@
       B02_entrada_narnia: ["entrada de narnia", "entrada narnia", "porta de narnia", "narnia"],
       B01_entrada_narnia: ["entrada de narnia b01", "entrada narnia b01", "porta de narnia b01"],
       B02_entrada_narnia_map: ["entrada narnia b02", "porta de narnia b02"],
+      P027_elevador_templo: ["elevador t", "elevadores t", "elevador templo", "elevadores templo"],
+      L00_escadas_laterais_t: ["escada lateral", "escadas laterais", "escadas laterais t", "escada lateral t"],
+      "gfr-escadaLateral": ["escada lateral", "escadas laterais", "escadas laterais t", "escada lateral t"],
     },
     // limita opções de rota em pares específicos (evita desvios absurdos no grafo)
     routeOptionCaps: [
@@ -226,12 +274,12 @@
       },
       {
         a: ["P005_centro_de_formacao"],
-        b: ["P016_jardim"],
+        b: ["P016_jardim", "P020_espaco_servir"],
         max: 3,
       },
       {
         a: ["P004_sala_de_oracao_RGO"],
-        b: ["P016_jardim"],
+        b: ["P016_jardim", "P020_espaco_servir"],
         max: 3,
       },
       {
@@ -249,17 +297,44 @@
     poiIconCampus: {
       P005_centro_de_formacao: { x: 88, y: 168 },
       P004_sala_de_oracao_RGO: { x: 120, y: 200 },
-      P016_jardim: { x: 134, y: 748 },
-      P020_espaco_servir: { x: 207, y: 700 },
+      P016_jardim: { x: 110.44, y: 633.42 },
+      P020_espaco_servir: { x: 207, y: 715 },
+      P000E4_templo_entrada_4_lateral_03: { x: 251.73, y: 768.84 },
       P000E1_entrada_lateral_01_templo: { x: 321.89, y: 580.53 },
+      P027_elevador_templo: { x: 372.21, y: 485.59 },
+      L00_escadas_laterais_t: { x: 397.22, y: 511.24 },
+      "gfr-escadaLateral": { x: 397.22, y: 511.24 },
     },
     // entradas oficiais do Templo — nodeId = ID-base (L00_node_NNNN)
     templeEntrances: [
       { nodeId: "L00_node_0088", label: "Templo — Entrada 1" },
       { nodeId: "L00_node_0072", label: "Templo — Entrada 2" },
-      { nodeId: "L00_node_0033", label: "Templo — Entrada 3" },
-      { nodeId: "L00_node_0015", label: "Templo — Entrada 4" },
+      { nodeId: "L00_node_0015", label: "Templo — Entrada 3" },
+      { nodeId: "L00_node_0036", label: "Templo — Entrada 4" },
       { nodeId: "L00_node_0018", label: "Templo — Entrada 5" },
+    ],
+    /** Ícone de chegada da rota (porta) — malha continua no node oficial. */
+    templeEntranceIconCampus: {
+      L00_node_0036: { x: 251.73, y: 768.84 },
+    },
+    /** Percurso oficial por entrada do Templo (CF/RGO → estacionamento leste / jardim). */
+    templeEntranceRoutes: [
+      {
+        a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
+        entranceNodeId: "L00_node_0036",
+        endNode: "L00_node_0036",
+        via: [
+          "L00_node_0044",
+          "L00_node_0046",
+          "L00_node_0048",
+          "L00_node_0031",
+          "L00_node_0065",
+          "L00_node_0029_recepcao",
+          "L00_node_0085",
+          "L00_node_0037_jardim",
+        ],
+        allowParking: true,
+      },
     ],
     // rotas opcionais nomeadas (par de POIs → via nó(s) externo(s))
     namedExternalRoutes: [
@@ -320,7 +395,22 @@
         label: "Pelo jardim",
         avoidParking: false,
       },
-      // CF / RGO → Jardim / Espaço Servir: lateral Av. Batel (sem dar volta ao templo)
+      // CF / RGO → Jardim / Espaço Servir: corredor oeste (edges 0048→0038→0037 — malha oficial)
+      {
+        a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
+        b: ["P016_jardim", "P020_espaco_servir"],
+        via: [
+          "L00_node_0043",
+          "L00_node_0086_entrada_av_batel_02",
+          "L00_node_0085",
+        ],
+        endNodes: ["L00_node_0037_jardim", "L00_node_0035_espaco_servir"],
+        label: "Corredor oeste · Jardim/Servir",
+        avoidParking: false,
+        allowParking: true,
+        slot: 1,
+      },
+      // CF / RGO → Jardim / Espaço Servir: pelo estabelecimento até o corredor oeste
       {
         a: [
           "P005_centro_de_formacao",
@@ -341,25 +431,25 @@
         label: "Entrada/saída · Av. Batel",
         avoidParking: false,
         allowParking: true,
+        slot: 3,
       },
-      // CF / L00 → Jardim (opção 1): contorno leste — perímetro externo, sem voltas no estacionamento
+      // CF / RGO → Jardim / Espaço Servir: contorno leste pelo estacionamento
       {
         a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
-        b: ["P016_jardim"],
+        b: ["P016_jardim", "P020_espaco_servir"],
         via: [
           "L00_node_0043",
           "L00_node_0044",
           "L00_node_0046",
+          "L00_node_0048",
           "L00_node_0031",
           "L00_node_0065",
           "L00_node_0054_sevenpass",
-          "L00_node_0056",
-          "L00_node_0032",
-          "L00_node_0022_estacionamento_01",
-          "L00_node_0034",
+          "L00_node_0029_recepcao",
+          "L00_node_0085",
         ],
-        endNodes: ["L00_node_0037_jardim"],
-        label: "Contorno leste do templo",
+        endNodes: ["L00_node_0037_jardim", "L00_node_0035_espaco_servir"],
+        label: "Pelo estacionamento (leste)",
         avoidParking: false,
         allowParking: true,
         slot: 2,
@@ -373,7 +463,6 @@
           "L00_node_0031",
           "L00_node_0065",
           "L00_node_0029_recepcao",
-          "L00_node_0034",
         ],
         endNodes: ["L00_node_0037_jardim"],
         label: "Pelo estabelecimento (RGO)",
@@ -478,7 +567,7 @@
       },
     ],
     // Nível lógico (exibição/filtro) × mapa de rota (ícone/grafo)
-    // Espaço Servir fica no B01, mas o acesso caminhável está no L00 (Jardim / lateral templo).
+    // Espaço Servir: sala no subsolo, mas busca/clique/mapa apontam para a entrada no térreo (L00).
     poiLevels: {
       P016_jardim: {
         level: "L00",
@@ -486,7 +575,7 @@
         building: "Jardim",
       },
       P020_espaco_servir: {
-        level: "B01",
+        level: "L00",
         mapLevel: "L00",
         building: "Subsolo 01",
         accessNote:
@@ -539,7 +628,7 @@
       L00: {
         nodeId: "L00_node_0081_elevador_t",
         transferNodeId: "L00_node_0077",
-        label: "Elevadores T",
+        label: "Elevador T",
       },
       L01: { nodeId: "L01_node_0001_elevador", label: "Elevador (1º andar)" },
       L02: { nodeId: "L02_node_0001_elevador", label: "Elevador (2º andar)" },

@@ -3,6 +3,49 @@
 
   const CONFIG = globalThis.PIBMapConfig;
   if (CONFIG?.appBuild) document.documentElement.dataset.build = CONFIG.appBuild;
+
+  function appAssetUrl(path) {
+    if (CONFIG?.appAssetUrl) return CONFIG.appAssetUrl(path);
+    const v = CONFIG?.appBuild || globalThis.__PIB_BUILD__ || "0";
+    const sep = String(path).includes("?") ? "&" : "?";
+    return `${path}${sep}v=${encodeURIComponent(v)}`;
+  }
+
+  /** Detecta nova versão em config.js e recarrega (ex.: após sync no Drive). */
+  function watchBuildUpdates() {
+    if (!CONFIG?.appBuild) return;
+    const check = async () => {
+      try {
+        const res = await fetch(`js/app/config.js?_=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const text = await res.text();
+        const m = text.match(/appBuild:\s*["']([^"']+)["']/);
+        const remote = m?.[1];
+        if (remote && remote !== CONFIG.appBuild) {
+          sessionStorage.setItem("pibMapBuild", remote);
+          toast(`Nova versão (v${remote}) — recarregando…`);
+          setTimeout(() => location.reload(), 700);
+        }
+      } catch { /* offline */ }
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") check();
+    });
+    window.addEventListener("focus", check);
+  }
+
+  function showBuildBadge() {
+    if (!CONFIG?.appBuild || !el.floorHint) return;
+    el.floorHint.dataset.build = CONFIG.appBuild;
+    let tag = el.floorHint.querySelector(".build-tag");
+    if (!tag) {
+      tag = document.createElement("span");
+      tag.className = "build-tag";
+      tag.title = "Versão do mapa — confirme se as atualizações foram aplicadas";
+      el.floorHint.appendChild(tag);
+    }
+    tag.textContent = ` · v${CONFIG.appBuild}`;
+  }
   /* ============================================================ ELEMENTOS */
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -461,6 +504,7 @@
         invalidateTempleEntranceCache();
         syncPoisFromNavigation(loader.getMeta()?.poiCatalog || [], { injectAllFloors: true });
         rebuildL00PoiIndex();
+        injectHiddenRoutePois();
       } catch (err) {
         console.error("ensureNavGraphFloors:", err);
         state.navGraphError = String(err.message || err);
@@ -501,8 +545,9 @@
           if (preferred) nodeIds = [preferred, ...nodeIds.filter((id) => id !== preferred)];
           poi.navNodeIds = [...new Set(nodeIds)];
           poi.navId = match.id;
-          if (match.level) poi.level = match.level;
-          if (match.mapLevel) poi.mapLevel = match.mapLevel;
+          const ov = poiLevelOverride(poi.rawId || poi.id);
+          if (match.level && !ov?.level) poi.level = match.level;
+          if (match.mapLevel && !ov?.mapLevel) poi.mapLevel = match.mapLevel;
           if (match.building) poi.building = match.building;
           if (match.accessNote) poi.accessNote = match.accessNote;
           const nid = poi.navNodeIds[0];
@@ -534,6 +579,13 @@
           p.navId === jp.id || p.rawId === jp.rawId || p.id === jp.rawId
         );
         if (already || !jp.nodeIds?.length) continue;
+        if (jp.rawId === "P020_espaco_servir" && jp.level === "B01") {
+          const onCampus = G.pois.some((p) => {
+            const parsed = l00()?.parsePoiLayerName(p.rawId || p.id || "");
+            return parsed?.rawName === "espaco_servir";
+          });
+          if (onCampus) continue;
+        }
         const nid = jp.nodeIds[0];
         const node = state.navGraph?.nodesById?.get(nid);
         const lvl = jp.level || node?.level || "L00";
@@ -776,6 +828,7 @@
 
   function isSearchablePoi(poi) {
     if (!poi || poi.active === false) return false;
+    if (poi.routeOnly) return false;
     const raw = poiRawKey(poi);
     if ((CONFIG.hiddenPoiRawIds || []).includes(raw)) return false;
     if (isElevadorGinasioSearchHidden(poi)) return false;
@@ -801,8 +854,41 @@
 
   function poiLevelOverride(rawId) {
     if (!rawId) return null;
-    const key = String(rawId).replace(/^L00_P_/i, "").replace(/^B0\d_P_/i, "");
-    return (CONFIG.poiLevels || {})[key] || (CONFIG.poiLevels || {})[rawId] || null;
+    const s = String(rawId);
+    const key = s.replace(/^L00_P_/i, "").replace(/^B0\d_P_/i, "");
+    const direct = (CONFIG.poiLevels || {})[key] || (CONFIG.poiLevels || {})[s];
+    if (direct) return direct;
+    if (/espaco_servir/i.test(s)) return CONFIG.poiLevels?.P020_espaco_servir || null;
+    if (/jardim/i.test(s) && /L00_poi/i.test(s)) return CONFIG.poiLevels?.P016_jardim || null;
+    return null;
+  }
+
+  /** Andar do mapa a exibir ao selecionar/clicar no POI (prioriza mapLevel). */
+  function poiMapViewLevel(poi) {
+    if (!poi) return "L00";
+    if (poi.mapLevel) return poi.mapLevel;
+    const ov = poiLevelOverride(poi.rawId || poi.id);
+    if (ov?.mapLevel) return ov.mapLevel;
+    return poiLevel(poi);
+  }
+
+  /** POI canônico no térreo (ícone L00_poi_*), quando catálogo legado apontava para B01. */
+  function resolveCampusPoiForUi(poi) {
+    if (!poi) return poi;
+    const key = poiRawKey(poi);
+    const isServir = key === "P020_espaco_servir"
+      || /espaco_servir/i.test(String(poi.rawId || poi.id || ""));
+    if (!isServir) return poi;
+    const layer = (G.pois || []).find((p) => {
+      const parsed = l00()?.parsePoiLayerName(p.rawId || p.id || "");
+      return parsed?.rawName === "espaco_servir";
+    });
+    if (!layer) return poi;
+    const note = poi.accessNote
+      || layer.accessNote
+      || CONFIG.poiLevels?.P020_espaco_servir?.accessNote
+      || null;
+    return { ...layer, accessNote: note };
   }
 
   function floorTitle(levelId) {
@@ -883,44 +969,85 @@
     return ids;
   }
 
-  /** Rotas entre andares T…L06: elevador ou escada lateral do andar de origem. */
+  /** Corredor interno do estabelecimento (CF/RGO → hall do templo / elevador T). */
+  const L00_INTERIOR_APPROACH = [
+    "L00_node_0046",
+    "L00_node_0031",
+    "L00_node_0065",
+    "L00_node_0067",
+    "L00_node_0073",
+  ];
+
+  const ELEVATOR_T_LABEL = "Elevador T";
+  const STAIRS_T_LABEL = "Escadas laterais T";
+
+  function l00InteriorApproachWaypoints() {
+    return L00_INTERIOR_APPROACH.filter((id) => state.navGraph?.nodesById?.has(id));
+  }
+
+  /** Evita contorno pela Av. Batel no trecho L00 de rotas verticais. */
+  function augmentHubWaypointsForL00(oLvl, dLvl, hubWaypoints) {
+    const approach = l00InteriorApproachWaypoints();
+    if (!approach.length || !hubWaypoints?.length) return hubWaypoints || [];
+    if (oLvl === "L00" && isAdmFloor(dLvl)) {
+      return mergeWaypointIds(approach, hubWaypoints);
+    }
+    if (isAdmFloor(oLvl) && dLvl === "L00") {
+      return mergeWaypointIds(hubWaypoints, approach.slice().reverse());
+    }
+    return hubWaypoints;
+  }
+
+  /** Viagem envolvendo andares L01–L06 (T↔L1…L6 ou entre andares ADM). */
+  function involvesAdmFloorCross(oLvl, dLvl) {
+    if (!oLvl || !dLvl || oLvl === dLvl) return false;
+    if (oLvl === "L00" && isAdmFloor(dLvl)) return true;
+    if (isAdmFloor(oLvl) && dLvl === "L00") return true;
+    return isAdmFloor(oLvl) && isAdmFloor(dLvl);
+  }
+
+  /** Rotas entre andares T…L06: elevador T ou escada lateral do andar de origem. */
   function buildCrossCampusFloorRoutes(NR, startIds, endIds, origin, dest) {
     const oLvl = poiLevel(origin);
     const dLvl = poiLevel(dest);
     if (!isCrossCampusFloorPair(oLvl, dLvl)) return [];
 
     const out = [];
-    const elevVia = elevatorHubWaypoints(oLvl, dLvl);
+    let elevVia = elevatorHubWaypoints(oLvl, dLvl);
+    elevVia = augmentHubWaypointsForL00(oLvl, dLvl, elevVia);
     if (elevVia.length >= 2) {
       const elevRoute = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, {
         via: elevVia,
-        label: "Pelo elevador",
+        label: ELEVATOR_T_LABEL,
         avoidParking: false,
         allowParking: true,
         bannedTypes: ["stairs"],
+        slot: 1,
       });
       if (elevRoute) {
         elevRoute.kind = "elevator";
-        elevRoute.label = "Pelo elevador";
+        elevRoute.label = ELEVATOR_T_LABEL;
         elevRoute.forceInclude = true;
         pushUniqueRoute(out, elevRoute, MAX_ROUTE_OPTIONS);
       }
     }
 
     if (isStairRoutePair(oLvl, dLvl)) {
-      const stairVia = stairHubWaypoints(oLvl, dLvl);
+      let stairVia = stairHubWaypoints(oLvl, dLvl);
+      stairVia = augmentHubWaypointsForL00(oLvl, dLvl, stairVia);
       if (stairVia.length >= 2) {
         const stairRoute = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, {
           via: stairVia,
-          label: "Pela escada lateral",
+          label: STAIRS_T_LABEL,
           avoidParking: false,
           allowParking: true,
           bannedTypes: ["elevator"],
+          slot: 2,
         });
         if (stairRoute) {
           stairRoute.viaStairs = true;
           stairRoute.kind = "stairs";
-          stairRoute.label = "Pela escada lateral";
+          stairRoute.label = STAIRS_T_LABEL;
           stairRoute.namedExternal = true;
           stairRoute.forceInclude = true;
           pushUniqueRoute(out, stairRoute, MAX_ROUTE_OPTIONS);
@@ -1089,6 +1216,76 @@
     return out;
   }
 
+  /** Ícone oficial do hub vertical (Elevador T / Escadas laterais T) no campus. */
+  function verticalHubIconPoint(levelId, route = state.route) {
+    const useStairs = !!(route?.viaStairs || route?.kind === "stairs");
+    const hub = useStairs ? stairHub(levelId) : elevatorHub(levelId);
+    if (!hub?.nodeId) return null;
+    const n = state.navGraph?.nodesById?.get(hub.nodeId);
+    if (n) return { x: n.x, y: n.y, nodeId: hub.nodeId };
+    const raw = useStairs ? "L00_escadas_laterais_t" : "P027_elevador_templo";
+    const icon = CONFIG.poiIconCampus?.[raw] || CONFIG.poiRouteEdges?.[raw]?.icon;
+    return icon ? { x: icon.x, y: icon.y, nodeId: hub.nodeId } : null;
+  }
+
+  function crossFloorExitLegIncomplete(points, levelId, route) {
+    const hub = verticalHubIconPoint(levelId, route);
+    if (!hub || !points?.length) return true;
+    const tip = points[points.length - 1];
+    return dist(tip, hub) > 55;
+  }
+
+  /** Prolonga o trecho de saída L00 até o ícone do elevador ou das escadas laterais. */
+  function appendVerticalHubExitLeg(pts, levelId, route = state.route) {
+    const hub = verticalHubIconPoint(levelId, route);
+    if (!hub || !pts?.length) return pts;
+    let out = pts.map((p) => ({ x: p.x, y: p.y }));
+    const hubPt = { x: hub.x, y: hub.y };
+    const tip = out[out.length - 1];
+    if (dist(tip, hubPt) <= 0.8) return out;
+
+    const spurMax = Math.max(tol("spurTol", 48), 120);
+    const mid = { x: hubPt.x, y: tip.y };
+    if (dist(tip, mid) > 0.8 && dist(tip, mid) <= spurMax && !crossesWall(tip, mid, levelId)) {
+      out.push(mid);
+    }
+    const tip2 = out[out.length - 1];
+    if (dist(tip2, hubPt) > 0.8 && dist(tip2, hubPt) <= spurMax && !crossesWall(tip2, hubPt, levelId)) {
+      out.push(hubPt);
+      return out;
+    }
+
+    const NR = globalThis.NavigationRouter;
+    if (!NR?.astar || !state.navGraph || !hub.nodeId) return out;
+    const startId = NR.nearestNodeId(tip2, state.navGraph, { level: levelId });
+    if (!startId || startId === hub.nodeId) return out;
+    const mesh = NR.astar(startId, [hub.nodeId], state.navGraph, { avoidParking: false });
+    if (mesh?.points?.length >= 2) {
+      out = out.concat(mesh.points.slice(1).map((p) => ({ x: p.x, y: p.y })));
+    }
+    return out;
+  }
+
+  /** Corrige trecho L00 truncado antes do hub vertical (elevador / escadas). */
+  function repairCrossFloorExitLegPoints(points, route, levelId) {
+    const oLvl = poiLevel(state.origin);
+    const dLvl = poiLevel(state.dest);
+    if (!crossFloorExitLeg(levelId, oLvl, dLvl) || !crossFloorExitLegIncomplete(points, levelId, route)) {
+      return points;
+    }
+
+    const sliced = sliceRoutePointsForLevel(route, levelId);
+    if (sliced?.length >= 2 && !crossFloorExitLegIncomplete(sliced, levelId, route)) {
+      return sliced.map((p) => ({ x: p.x, y: p.y }));
+    }
+
+    const fb = buildFloorLegFallbackPoints(levelId, state.origin, state.dest);
+    if (fb?.points?.length >= 2 && !isSyntheticStraightSpur(fb.points, fb, route)) {
+      return fb.points.map((p) => ({ x: p.x, y: p.y }));
+    }
+    return appendVerticalHubExitLeg(points, levelId, route);
+  }
+
   /** Trecho de saída do subsolo: só ajusta o fim ao lampião da Porta de Nárnia (sem spur da origem). */
   function finalizeBasementExitLegPoints(pts, levelId) {
     let out = (pts || []).map((p) => ({ x: p.x, y: p.y }));
@@ -1128,6 +1325,30 @@
         edgeIds: leg.edgeIds || [],
         nodeIds: leg.nodeIds || [],
       };
+    };
+
+    const astarThrough = (ids) => {
+      if (!ids || ids.length < 2) return null;
+      const mergedLegs = [];
+      for (let i = 0; i < ids.length - 1; i++) {
+        const leg = astarLeg(ids[i], ids[i + 1]);
+        if (!leg) return null;
+        mergedLegs.push(leg);
+      }
+      const outPts = [];
+      const outEdges = [];
+      const outNodes = [];
+      mergedLegs.forEach((leg, idx) => {
+        if (idx === 0) {
+          outPts.push(...leg.points);
+          outNodes.push(...leg.nodeIds);
+        } else {
+          outPts.push(...leg.points.slice(1));
+          outNodes.push(...leg.nodeIds.slice(1));
+        }
+        outEdges.push(...leg.edgeIds);
+      });
+      return { points: outPts, edgeIds: outEdges, nodeIds: outNodes };
     };
 
     if (isBasementExitActiveLeg(levelId, oLvl, dLvl)) {
@@ -1173,7 +1394,13 @@
     if (crossFloorExitLeg(levelId, oLvl, dLvl)) {
       const hubId = verticalHubNodeForLevel(levelId, state.route);
       const startIds = resolveNavNodeIds(origin, "origin");
-      const mesh = hubId && startIds[0] ? astarLeg(startIds[0], hubId) : null;
+      if (!hubId || !startIds[0]) return null;
+      let mesh = null;
+      if (levelId === "L00" && oLvl === "L00" && isAdmFloor(dLvl)) {
+        const via = l00InteriorApproachWaypoints();
+        if (via.length) mesh = astarThrough([startIds[0], ...via, hubId]);
+      }
+      if (!mesh?.points?.length) mesh = astarLeg(startIds[0], hubId);
       if (mesh?.points?.length >= 2) return mesh;
     }
 
@@ -1237,6 +1464,15 @@
     const oLvl = poiLevel(state.origin);
     const dLvl = poiLevel(state.dest);
 
+    if (route.kind === "templo" && route.fromJson && levelId === "L00" && oLvl === dLvl && oLvl === "L00") {
+      const meshEdges = route.edgeIds || [];
+      const meshNodes = route.nodeIds || [];
+      if (meshEdges.length >= 1 && meshNodes.length === meshEdges.length + 1) {
+        const mesh = buildMeshPaintPoints(meshEdges, meshNodes);
+        if (mesh?.length >= 2) return { leg: null, points: mesh };
+      }
+    }
+
     if (preferGraphRoutePaint(levelId, oLvl, dLvl)) {
       const view = resolveRoutePaintPoints(route, levelId);
       if (view.points?.length >= 2) return view;
@@ -1284,9 +1520,12 @@
       if (sliced?.length >= 2) {
         pts = sliced.map((p) => ({ x: p.x, y: p.y }));
       } else if (shouldUseFullRoutePolyline(levelId, oLvl, dLvl)) {
-        pts = route.points
+        const candidate = route.points
           .map((p) => ({ x: p.x, y: p.y }))
           .filter((p) => isFinite(p.x) && isFinite(p.y));
+        if (candidate.length >= 2 && !routePolylineCrossesWall(candidate, levelId)) {
+          pts = candidate;
+        }
       }
     }
 
@@ -1356,7 +1595,7 @@
     }
     for (const leg of legs || []) {
       if ((leg.points?.length || 0) >= 2 || !(leg.edgeIds?.length || 0)) continue;
-      const stitched = stitchEdgePaths(leg.edgeIds);
+      const stitched = buildMeshPaintPoints(leg.edgeIds, leg.nodeIds);
       if (stitched?.length >= 2) leg.points = stitched;
     }
     return legs;
@@ -1369,6 +1608,7 @@
 
     if (crossFloorExitLeg(levelId, oLvl, dLvl)) {
       out = refineVerticalHubEndpoint(out, levelId, route, "end");
+      out = appendVerticalHubExitLeg(out, levelId, route);
       if (!poiUsesOfficialRouteAnchor(state.origin)) {
         const o = poiIcon(state.origin);
         const maxSpur = tol("spurTol", poiToleranceZone(state.origin));
@@ -1416,7 +1656,25 @@
     return dist(pts[0], pts[1]) > 25;
   }
 
-  /** Monta polyline só pelos paths oficiais das edges (sem linha reta inventada). */
+  /** Monta polyline pelos paths oficiais — orienta cada edge pelos nodeIds (sem saltos diagonais). */
+  function buildMeshPaintPoints(edgeIds, nodeIds) {
+    if (!edgeIds?.length || !state.navGraph) return null;
+    const NR = globalThis.NavigationRouter;
+    if (NR?.buildRoutePoints && nodeIds?.length === edgeIds.length + 1) {
+      try {
+        const built = NR.buildRoutePoints(
+          edgeIds,
+          nodeIds,
+          state.navGraph.edgesById,
+          state.navGraph.nodesById,
+        );
+        if (built?.length >= 2) return built.map((p) => ({ x: p.x, y: p.y }));
+      } catch { /* fallback abaixo */ }
+    }
+    return stitchEdgePaths(edgeIds);
+  }
+
+  /** Monta polyline só pelos paths das edges (fallback sem nodeIds — evitar na pintura). */
   function stitchEdgePaths(edgeIds) {
     if (!edgeIds?.length || !state.navGraph) return null;
     const stitched = [];
@@ -1450,10 +1708,10 @@
     }
 
     if (points.length < 2 && leg?.edgeIds?.length >= 1) {
-      const stitched = stitchEdgePaths(leg.edgeIds);
-      if (stitched) {
-        points = stitched;
-        leg.points = stitched.map((p) => ({ x: p.x, y: p.y }));
+      const mesh = buildMeshPaintPoints(leg.edgeIds, leg.nodeIds);
+      if (mesh) {
+        points = mesh;
+        leg.points = mesh.map((p) => ({ x: p.x, y: p.y }));
       }
     }
 
@@ -1478,9 +1736,12 @@
       }
     }
     if (points.length < 2 && shouldUseFullRoutePolyline(levelId, oLvl, dLvl) && route.points?.length >= 2) {
-      points = route.points
+      const candidate = route.points
         .map((p) => ({ x: p.x, y: p.y }))
         .filter((p) => isFinite(p.x) && isFinite(p.y));
+      if (candidate.length >= 2 && !routePolylineCrossesWall(candidate, levelId)) {
+        points = candidate;
+      }
     }
 
     if (points.length < 2 && state.origin && state.dest) {
@@ -1511,8 +1772,11 @@
         end = i;
       }
       if (start >= 0 && end > start) {
-        const stitched = stitchEdgePaths((route.edgeIds || []).slice(start, end));
-        if (stitched) points = stitched;
+        const mesh = buildMeshPaintPoints(
+          (route.edgeIds || []).slice(start, end),
+          (route.nodeIds || []).slice(start, end + 1),
+        );
+        if (mesh) points = mesh;
       }
     }
 
@@ -1521,10 +1785,17 @@
       if (sliced?.length >= 2) {
         points = sliced.map((p) => ({ x: p.x, y: p.y }));
       } else if (oLvl === dLvl && oLvl === levelId) {
-        points = route.points
+        const candidate = route.points
           .map((p) => ({ x: p.x, y: p.y }))
           .filter((p) => isFinite(p.x) && isFinite(p.y));
+        if (candidate.length >= 2 && !routePolylineCrossesWall(candidate, levelId)) {
+          points = candidate;
+        }
       }
+    }
+
+    if (points.length >= 2) {
+      points = repairCrossFloorExitLegPoints(points, route, levelId);
     }
 
     return { leg, points };
@@ -1543,6 +1814,15 @@
     const dLvl = poiLevel(state.dest);
     if (!isCrossFloorTrip(oLvl, dLvl)) return;
     for (const leg of route.legs) {
+      if (crossFloorExitLeg(leg.level, oLvl, dLvl)) {
+        const fb = buildFloorLegFallbackPoints(leg.level, state.origin, state.dest);
+        if (fb?.points?.length >= 2 && !isSyntheticStraightSpur(fb.points, fb, route)) {
+          leg.points = fb.points.map((p) => ({ x: p.x, y: p.y }));
+          if (fb.edgeIds?.length) leg.edgeIds = fb.edgeIds.slice();
+          if (fb.nodeIds?.length) leg.nodeIds = fb.nodeIds.slice();
+          continue;
+        }
+      }
       if ((leg.points?.length || 0) >= 2) continue;
       const fb = buildFloorLegFallbackPoints(leg.level, state.origin, state.dest);
       if (!fb?.points?.length || fb.points.length < 2) continue;
@@ -1974,6 +2254,45 @@
     return L00I.buildSearchIndex(svg, state.navGraph, G.nodes, G.adj);
   }
 
+  /** POIs ocultos injetados — ancora rotas na malha (sem ícone no mapa). */
+  function injectHiddenRoutePois() {
+    for (const spec of CONFIG.hiddenRoutePois || []) {
+      if (!spec?.rawId) continue;
+      if ((G.pois || []).some((p) => poiRawKey(p) === spec.rawId)) continue;
+      const resolved = resolveGraphNodeId(spec.anchor) || spec.anchor;
+      const node = state.navGraph?.nodesById?.get(resolved) || G.nodes?.[resolved];
+      if (!node) continue;
+      const icon = spec.iconCampus || { x: node.x, y: node.y };
+      const poi = enrichPoiMeta({
+        id: spec.rawId,
+        rawId: spec.rawId,
+        name: spec.name || spec.rawId,
+        searchLabel: spec.name || spec.rawId,
+        x: icon.x,
+        y: icon.y,
+        iconX: icon.x,
+        iconY: icon.y,
+        level: spec.level || node.level || "L00",
+        mapLevel: "L00",
+        cat: "acesso",
+        group: "auditorios",
+        building: "Templo",
+        navNodeIds: [resolved],
+        anchor: resolved,
+        snap: { x: node.x, y: node.y },
+        graphNodeId: resolved,
+        templeEntranceNodeId: spec.templeEntranceNodeId || nodeIdBase(resolved),
+        isTempleEntrance: true,
+        iconHidden: true,
+        routeOnly: true,
+        active: true,
+      });
+      applyInjectedPoiIcon(poi);
+      G.pois.push(poi);
+    }
+    G.pois.sort((a, b) => (a.searchLabel || a.name).localeCompare(b.searchLabel || b.name, "pt-BR"));
+  }
+
   /** Resolve IDs de nós de origem/destino a partir do JSON de navegação. */
   function resolveNavNodeIds(poi, role) {
     if (!poi) return [];
@@ -1988,7 +2307,10 @@
     if (official?.graphNodeId) return [official.graphNodeId];
     if (official?.unavailable && NavigationRouter && state.navGraph) {
       const lvl = poiLevel(enriched) || state.activeLevel || "L00";
-      const id = NavigationRouter.nearestNodeId(poiIcon(enriched) || enriched, state.navGraph, {
+      const snap = isGardenAccessPoi(enriched)
+        ? (poiRouteAnchor(enriched) || enriched)
+        : (poiIcon(enriched) || enriched);
+      const id = NavigationRouter.nearestNodeId(snap, state.navGraph, {
         level: lvl,
         avoidParking: role === "here" || role === "origin",
       });
@@ -2051,7 +2373,11 @@
       return id ? [id] : [];
     }
     if (GFRM?.isMappedL00Poi(enriched, poiRawKey)) return [];
-    const id = NavigationRouter.nearestNodeId(poiIcon(enriched) || enriched, state.navGraph, { level: lvl });
+    if (isGardenAccessPoi(enriched)) {
+      const gardenEnd = gardenOfficialEndNodeId(enriched);
+      if (gardenEnd) return [gardenEnd];
+    }
+    const id = NavigationRouter.nearestNodeId(poiRouteAnchor(enriched) || poiIcon(enriched) || enriched, state.navGraph, { level: lvl });
     return id ? [id] : [];
   }
 
@@ -2115,8 +2441,17 @@
       const anchor = poiRouteAnchor(poi);
       if (anchor) {
         poi.snap = { x: anchor.x, y: anchor.y };
-        poi.iconX = anchor.x;
-        poi.iconY = anchor.y;
+        const raw = poiRawKey(poi);
+        const campus = resolvePoiIconCampus(poi) || CONFIG.poiIconCampus?.[raw];
+        if (campus) {
+          poi.iconX = campus.x;
+          poi.iconY = campus.y;
+          poi.x = campus.x;
+          poi.y = campus.y;
+        } else {
+          poi.iconX = anchor.x;
+          poi.iconY = anchor.y;
+        }
       }
     } else {
       applyInjectedPoiIcon(poi);
@@ -2135,11 +2470,57 @@
     };
   }
 
+  /** POI edge / ícone oficial no campus (inclui layers L00_poi_* → P020). */
+  function poiRouteEdgeSpec(poi) {
+    const raw = poiRawKey(poi);
+    return CONFIG.poiRouteEdges?.[raw] || null;
+  }
+
+  function resolvePoiIconCampus(poi) {
+    if (!poi) return null;
+    if (poi.iconX != null && poi.iconY != null && (poi.entranceLabel || poi.templeEntranceNodeId)) {
+      return { x: poi.iconX, y: poi.iconY };
+    }
+    const raw = poiRawKey(poi);
+    const layerRaw = String(poi.rawId || poi.id || "");
+    const parsed = l00()?.parsePoiLayerName(layerRaw);
+    if (parsed?.rawName === "espaco_servir") {
+      return CONFIG.poiRouteEdges?.P020_espaco_servir?.icon
+        || CONFIG.poiIconCampus?.P020_espaco_servir
+        || null;
+    }
+    if (parsed?.rawName === "jardim") {
+      return CONFIG.poiIconCampus?.P016_jardim || null;
+    }
+    return poiRouteEdgeSpec(poi)?.icon
+      || CONFIG.poiIconCampus?.[raw]
+      || CONFIG.poiIconCampus?.[layerRaw]
+      || null;
+  }
+
+  /** Prolonga a rota até o ícone oficial (POI edge) sem atravessar paredes. */
+  function appendPoiRouteEdgeIcon(pts, dest, levelId) {
+    const icon = resolvePoiIconCampus(dest);
+    if (!icon || !pts?.length) return pts;
+    let out = pts.map((p) => ({ x: p.x, y: p.y }));
+    const spurMax = Math.max(tol("spurTol", poiToleranceZone(dest)), 110);
+    const tip = out[out.length - 1];
+    if (dist(tip, icon) <= 0.8) return out;
+    const mid = { x: icon.x, y: tip.y };
+    if (dist(tip, mid) > 0.8 && dist(tip, mid) <= spurMax && !crossesWall(tip, mid, levelId)) {
+      out.push(mid);
+    }
+    const tip2 = out[out.length - 1];
+    if (dist(tip2, icon) > 0.8 && dist(tip2, icon) <= spurMax && !crossesWall(tip2, icon, levelId)) {
+      out.push({ x: icon.x, y: icon.y });
+    }
+    return out;
+  }
+
   /** Pin visual de POIs injetados (rota continua ancorada no nodeIds). */
   function applyInjectedPoiIcon(poi) {
     if (!poi) return poi;
-    const raw = poi.rawId || poi.id || "";
-    const campus = CONFIG.poiIconCampus?.[raw];
+    const campus = resolvePoiIconCampus(poi);
     if (campus) {
       poi.iconX = campus.x;
       poi.iconY = campus.y;
@@ -2147,6 +2528,7 @@
       poi.y = campus.y;
       return poi;
     }
+    const raw = poi.rawId || poi.id || "";
     const local = CONFIG.poiIconLocal?.[raw];
     if (!local) return poi;
     const c = localAdmToCampus(local);
@@ -2164,6 +2546,7 @@
       const el = svg.getElementById(elId);
       const poi = (G.pois || []).find((p) => p.rawId === rawId);
       if (!el || !poi) return;
+      if (CONFIG.poiIconCampus?.[rawId] || CONFIG.poiAnchors?.[rawId]) return;
       const c = poiCenter(el);
       if (!isFinite(c.x) || !isFinite(c.y)) return;
       const pos = useLocal ? c : localAdmToCampus(c);
@@ -2264,12 +2647,16 @@
       return null;
     }
     const node = state.navGraph?.nodesById?.get(resolved) || G.nodes?.[resolved];
+    const campus = CONFIG.templeEntranceIconCampus?.[baseId]
+      || CONFIG.templeEntranceIconCampus?.[resolved];
     return {
       nodeId: baseId,
       graphNodeId: resolved,
       label,
       x: node?.x,
       y: node?.y,
+      routeIconX: campus?.x,
+      routeIconY: campus?.y,
     };
   }
 
@@ -2290,6 +2677,8 @@
 
   function buildTempleEntrancePoi(entry) {
     const id = `templo-entrada-${entry.nodeId}`;
+    const iconX = entry.routeIconX ?? entry.x;
+    const iconY = entry.routeIconY ?? entry.y;
     return {
       id,
       rawId: id,
@@ -2306,10 +2695,10 @@
       anchor: entry.graphNodeId,
       navNodeIds: [entry.graphNodeId],
       snap: { x: entry.x, y: entry.y },
-      x: entry.x,
-      y: entry.y,
-      iconX: entry.x,
-      iconY: entry.y,
+      x: iconX,
+      y: iconY,
+      iconX,
+      iconY,
     };
   }
 
@@ -2497,11 +2886,17 @@
 
   function isRouteWallSafe(route, origin, dest) {
     if (!route) return false;
+    if (route.namedExternal && route.forceInclude) return true;
     const lvl = poiLevel(origin) === poiLevel(dest)
       ? (poiLevel(origin) || "L00")
       : (poiLevel(origin) || poiLevel(dest) || "L00");
     if (!wallsForLevel(lvl).length) return true;
-    let pts = route.points?.length >= 2 ? route.points : stitchEdgePaths(route.edgeIds || []);
+    let pts = (route.edgeIds?.length >= 1 && route.nodeIds?.length === route.edgeIds.length + 1 && state.navGraph)
+      ? buildMeshPaintPoints(route.edgeIds, route.nodeIds)
+      : null;
+    if (!pts || pts.length < 2) {
+      pts = route.points?.length >= 2 ? route.points : buildMeshPaintPoints(route.edgeIds, route.nodeIds);
+    }
     if (!pts || pts.length < 2) return true;
     return !routePolylineCrossesWall(pts, lvl);
   }
@@ -2580,7 +2975,13 @@
     const maxRatio = 2.35;
     const cap = maxRouteOptionsForPair(origin, dest);
     // Rotas nomeadas (ex.: contorno pelo estacionamento) são intencionalmente mais longas
-    return sorted.filter((r, i) => r.namedExternal || i === 0 || meters(r) <= best * maxRatio).slice(0, cap);
+    return sorted.filter((r, i) =>
+      r.namedExternal
+      || r.forceInclude
+      || (r.kind === "templo" && r.fromJson && r.entranceId)
+      || i === 0
+      || meters(r) <= best * maxRatio
+    ).slice(0, cap);
   }
   const ROUTE_DUPE_EDGE = 0.72;
   const ROUTE_DUPE_POINTS = 0.78;
@@ -2596,6 +2997,169 @@
     const k = poiRawKey(poi);
     if (/P016_jardim|P020_espaco_servir|(?:^|_)jardim$/i.test(k)) return true;
     return /\bjardim\b/.test(normSearch(poi.searchLabel || poi.name || ""));
+  }
+
+  /** Jardim / Espaço Servir — entrada visual na área verde (malha fica no corredor). */
+  function isGardenAccessPoi(poi) {
+    const k = poiRawKey(poi);
+    return k === "P016_jardim" || k === "P020_espaco_servir";
+  }
+
+  /** Nó oficial de chegada (Jardim ≠ Espaço Servir — nunca escolher o mais curto entre os dois). */
+  function gardenOfficialEndNodeId(poi) {
+    if (!poi) return null;
+    const raw = poiRawKey(poi);
+    const cfg = CONFIG.poiAnchors?.[raw];
+    if (!cfg) return null;
+    const resolved = resolveGraphNodeId(cfg) || cfg;
+    if (state.navGraph?.nodesById?.has(resolved)) return resolved;
+    if (G.nodes?.[resolved]) return resolved;
+    return null;
+  }
+
+  /** Nós + edges usados na pintura (malha completa quando a perna é só um trecho). */
+  function routePaintMesh(leg, route) {
+    const legNodes = leg?.nodeIds || [];
+    const legEdges = leg?.edgeIds || [];
+    const routeNodes = route?.nodeIds || [];
+    const routeEdges = route?.edgeIds || [];
+    const legOk = legEdges.length >= 1 && legNodes.length === legEdges.length + 1;
+    const routeOk = routeEdges.length >= 1 && routeNodes.length === routeEdges.length + 1;
+    if (routeOk && (!legOk || routeEdges.length >= legEdges.length)) {
+      return { nodeIds: routeNodes, edgeIds: routeEdges };
+    }
+    if (legOk) return { nodeIds: legNodes, edgeIds: legEdges };
+    if (routeOk) return { nodeIds: routeNodes, edgeIds: routeEdges };
+    return { nodeIds: legNodes.length ? legNodes : routeNodes, edgeIds: legEdges.length ? legEdges : routeEdges };
+  }
+
+  /** Trecho outdoor oficial (Jardim/Servir) — paths do SVG, sem heurística de parede indoor. */
+  function isOutdoorMeshEdgeIds(edgeIds) {
+    if (!edgeIds?.length || !state.navGraph) return false;
+    return edgeIds.every((eid) => {
+      const e = state.navGraph.edgesById.get(eid);
+      return e && (e.type === "outdoor_path" || e.zone === "outdoor");
+    });
+  }
+
+  /** Remove laços visuais (ponto que repete posição mais adiante na polyline). */
+  function removePointBacktracks(points, eps = 2.5) {
+    const pts = (points || []).map((p) => ({ x: p.x, y: p.y }));
+    if (pts.length < 3) return pts;
+    let changed = true;
+    while (changed && pts.length >= 3) {
+      changed = false;
+      for (let i = 0; i < pts.length - 2; i++) {
+        for (let j = i + 2; j < pts.length; j++) {
+          if (dist(pts[i], pts[j]) <= eps) {
+            pts.splice(i + 1, j - i);
+            changed = true;
+            break;
+          }
+        }
+        if (changed) break;
+      }
+    }
+    return pts.length >= 2 ? pts : points;
+  }
+
+  function resolveRouteMeshEndIndex(nodeIds, endNodeId) {
+    if (!nodeIds?.length || !endNodeId) return -1;
+    let endIdx = nodeIds.lastIndexOf(endNodeId);
+    if (endIdx >= 1) return endIdx;
+    const base = nodeIdBase(endNodeId);
+    for (let i = nodeIds.length - 1; i >= 1; i--) {
+      if (nodeIdBase(nodeIds[i]) === base) return i;
+    }
+    return -1;
+  }
+
+  /** Anexa trecho final da malha (ex.: 0085 → Jardim → entrada) sem substituir a rota inteira. */
+  function appendRouteMeshTail(pts, route, endNodeId, levelId, joinRadius = 18) {
+    if (!pts?.length || !route?.nodeIds?.length || !endNodeId) return pts;
+    const tip = pts[pts.length - 1];
+    const nodeIds = route.nodeIds;
+    const edgeIds = route.edgeIds || [];
+    const endIdx = resolveRouteMeshEndIndex(nodeIds, endNodeId);
+    if (endIdx < 1) return pts;
+
+    const endNode = state.navGraph?.nodesById?.get(nodeIds[endIdx]);
+    if (endNode && dist(tip, endNode) <= 1.2) return pts;
+
+    let joinIdx = -1;
+    for (let i = endIdx; i >= 0; i--) {
+      const n = state.navGraph?.nodesById?.get(nodeIds[i]);
+      if (n && dist(tip, n) <= joinRadius) { joinIdx = i; break; }
+    }
+    if (joinIdx < 0 || joinIdx >= endIdx) return pts;
+
+    const tailNodes = nodeIds.slice(joinIdx, endIdx + 1);
+    const tailEdges = edgeIds.slice(joinIdx, endIdx);
+    const tail = buildMeshPaintPoints(tailEdges, tailNodes);
+    if (!tail?.length || tail.length < 2) return pts;
+    if (!isOutdoorMeshEdgeIds(tailEdges) && routePolylineCrossesWall(tail, levelId)) return pts;
+
+    const out = pts.map((p) => ({ x: p.x, y: p.y }));
+    for (let i = 0; i < tail.length; i++) {
+      if (i === 0 && dist(out[out.length - 1], tail[0]) <= 1.2) continue;
+      out.push(tail[i]);
+    }
+    return out;
+  }
+
+  /** Anexa trecho final da malha (0085 → Jardim/Servir) sem substituir a rota inteira. */
+  function appendGardenMeshTail(pts, route, leg, dest, levelId) {
+    if (!pts?.length || !isGardenAccessPoi(dest) || !route?.nodeIds?.length) return pts;
+    const anchor = poiRouteAnchor(dest);
+    const endNode = gardenOfficialEndNodeId(dest);
+    if (!anchor || !endNode) return pts;
+    const tip = pts[pts.length - 1];
+    if (dist(tip, anchor) <= 1.2) return pts;
+    return appendRouteMeshTail(pts, route, endNode, levelId);
+  }
+
+  /** Prolonga rota até a entrada lateral do Templo (malha outdoor + ícone da porta). */
+  function ensureTempleEntranceRouteEndpoint(pts, route, levelId) {
+    if (!pts?.length || route?.kind !== "templo") return pts;
+    const endNode = route.entranceId || route.viaEndNode;
+    if (!endNode) return pts;
+    let out = appendRouteMeshTail(pts, route, endNode, levelId, 22);
+    const base = nodeIdBase(endNode);
+    const campus = CONFIG.templeEntranceIconCampus?.[base]
+      || CONFIG.templeEntranceIconCampus?.[endNode];
+    if (!campus) return out;
+    const tip = out[out.length - 1];
+    if (dist(tip, campus) <= 0.8) return out;
+    const spurMax = 140;
+    const mid = { x: campus.x, y: tip.y };
+    if (dist(tip, mid) > 0.8 && dist(tip, mid) <= spurMax) {
+      out = out.concat([mid]);
+    }
+    const tip2 = out[out.length - 1];
+    if (dist(tip2, campus) > 0.8 && dist(tip2, campus) <= spurMax) {
+      out = out.concat([{ x: campus.x, y: campus.y }]);
+    }
+    return out;
+  }
+
+  /** Prolonga a polyline até o nó da malha (corredor L00), sem desviar ao ícone. */
+  function ensureGardenRouteNodeEndpoint(pts, dest, levelId, route, leg) {
+    if (!pts?.length || !isGardenAccessPoi(dest)) return pts;
+    let out = appendGardenMeshTail(pts, route, leg, dest, levelId);
+    const anchor = poiRouteAnchor(dest);
+    if (!anchor) return out;
+    const tip = out[out.length - 1];
+    if (dist(tip, anchor) <= 1.2) return out;
+    const spurMax = Math.max(tol("spurTol", poiToleranceZone(dest)), 120);
+    const mid = { x: anchor.x, y: tip.y };
+    if (dist(tip, mid) > 0.8 && dist(tip, mid) <= spurMax && !crossesWall(tip, mid, levelId)) {
+      out = out.concat([mid]);
+    }
+    const tip2 = out[out.length - 1];
+    if (dist(tip2, anchor) > 0.8 && dist(tip2, anchor) <= spurMax && !crossesWall(tip2, anchor, levelId)) {
+      out = out.concat([{ x: anchor.x, y: anchor.y }]);
+    }
+    return appendPoiRouteEdgeIcon(out, dest, levelId);
   }
 
   /** Remove vértices colineares (micro-zig-zags visuais). */
@@ -2618,6 +3182,8 @@
   function shortcutRoutePoints(points, levelId) {
     const pts = (points || []).map((p) => ({ x: p.x, y: p.y }));
     if (pts.length < 3) return pts;
+    // L00 indoor: atalhos diagonais podem cortar paredes mesmo com crossesWall falso negativo
+    if (levelId === "L00") return pts;
     const lvl = levelId || "L00";
     const out = [pts[0]];
     let i = 0;
@@ -2630,6 +3196,27 @@
       i = best;
     }
     return out.length >= 2 ? out : pts;
+  }
+
+  /** Prioriza malha oficial quando a polyline atravessa parede. */
+  function sanitizeRoutePaintPoints(points, leg, route, levelId) {
+    let pts = (points || []).map((p) => ({ x: p.x, y: p.y }));
+    if (pts.length < 2) return pts;
+
+    const { nodeIds, edgeIds } = routePaintMesh(leg, route);
+    if (edgeIds.length >= 1 && nodeIds.length === edgeIds.length + 1) {
+      const mesh = buildMeshPaintPoints(edgeIds, nodeIds);
+      const outdoor = isOutdoorMeshEdgeIds(edgeIds);
+      if (mesh?.length >= 2 && (outdoor || !routePolylineCrossesWall(mesh, levelId))) {
+        return removePointBacktracks(mesh);
+      }
+    }
+
+    if (!routePolylineCrossesWall(pts, levelId)) return removePointBacktracks(pts);
+
+    while (pts.length >= 2 && crossesWall(pts[0], pts[1], levelId)) pts.shift();
+    while (pts.length >= 2 && crossesWall(pts[pts.length - 2], pts[pts.length - 1], levelId)) pts.pop();
+    return removePointBacktracks(pts.length >= 2 ? pts : (points || []));
   }
 
   function refineRoutePolyline(points, levelId) {
@@ -2717,13 +3304,14 @@
   }
 
   function applyRoutePolylineRefinement(route, origin, dest) {
+    if (route?.kind === "templo" && route.fromJson) return route;
     if (!route?.points || route.points.length < 3) return route;
     const lvl = poiLevel(origin) === poiLevel(dest)
       ? (poiLevel(origin) || "L00")
       : (poiLevel(dest) || poiLevel(origin) || "L00");
     const refined = refineRoutePolyline(route.points, lvl);
     if (refined.length < 2) return route;
-    if (isJardimDestination(dest) && routePolylineCrossesWall(refined, lvl)) return route;
+    if (routePolylineCrossesWall(refined, lvl)) return route;
     const mpu = getMetersPerUnit();
     let length = 0;
     for (let i = 1; i < refined.length; i++) length += dist(refined[i - 1], refined[i]);
@@ -2834,20 +3422,50 @@
   }
 
   const CF_JARDIM_NAMED_LABELS = [
-    "Contorno leste do templo",
+    "Corredor oeste · Jardim/Servir",
+    "Pelo estacionamento (leste)",
     "Pelo estabelecimento (RGO)",
   ];
+
+  const CF_SERVIR_NAMED_LABELS = [
+    "Corredor oeste · Jardim/Servir",
+    "Pelo estacionamento (leste)",
+    "Entrada/saída · Av. Batel",
+    "Pelo estabelecimento (RGO)",
+  ];
+
+  const RGO_CONEXAO_NAMED_LABEL = "Pelo corredor interno";
+
+  function isRgoToConexaoPair(origin, dest) {
+    if (!origin || !dest) return false;
+    const keys = [poiRawKey(origin), poiRawKey(dest)];
+    const isRgo = (k) => /P004_sala_de_oracao_RGO/i.test(k);
+    const isConexao = (k) => /P010_espaco_conexao/i.test(k);
+    if ((isRgo(keys[0]) && isConexao(keys[1])) || (isRgo(keys[1]) && isConexao(keys[0]))) return true;
+    const oName = normSearch(origin.searchLabel || origin.name || "");
+    const dName = normSearch(dest.searchLabel || dest.name || "");
+    const rgoName = /sala de oracao rgo|\brgo\b/.test(oName) || /sala de oracao rgo|\brgo\b/.test(dName);
+    const conexaoName = /espaco conexao|espaço conexão|conexao servir|conexão servir/.test(oName)
+      || /espaco conexao|espaço conexão|conexao servir|conexão servir/.test(dName);
+    return rgoName && conexaoName;
+  }
 
   function resolveTripNodeIds(poi, role) {
     let ids = resolveNavNodeIds(poi, role);
     if (ids.length) return ids;
     const raw = poiRawKey(poi);
     const anchor = CONFIG.poiAnchors?.[raw];
-    if (anchor && state.navGraph?.nodesById?.has(anchor)) return [anchor];
+    if (anchor) {
+      const resolved = resolveGraphNodeId(anchor) || anchor;
+      if (state.navGraph?.nodesById?.has(resolved)) return [resolved];
+    }
     const NR = globalThis.NavigationRouter;
     if (NR && state.navGraph && poi) {
       const lvl = poiLevel(poi) || state.activeLevel || "L00";
-      const id = NR.nearestNodeId(poiIcon(poi) || poi, state.navGraph, {
+      const snap = isGardenAccessPoi(poi)
+        ? (poiRouteAnchor(poi) || poi)
+        : (poiIcon(poi) || poi);
+      const id = NR.nearestNodeId(snap, state.navGraph, {
         level: lvl,
         avoidParking: role === "here" || role === "origin",
       });
@@ -2934,12 +3552,12 @@
     return [];
   }
 
-  /** Térreo → L1…L6: sempre elevador + escada lateral como opções distintas. */
+  /** Térreo ↔ L1…L6 (e entre andares ADM): sempre elevador T + escadas laterais T. */
   function ensureCrossFloorRouteOptions(options, NR, origin, dest) {
     const oLvl = poiLevel(origin);
     const dLvl = poiLevel(dest);
     if (!NR || !state.navGraph) return options || [];
-    if (!(oLvl === "L00" && isAdmFloor(dLvl))) return options || [];
+    if (!involvesAdmFloorCross(oLvl, dLvl)) return options || [];
     let list = (options || []).slice();
     const hasElev = list.some((r) => r.kind === "elevator" || /elevador/i.test(r.label || ""));
     const hasStair = list.some((r) => r.viaStairs || r.kind === "stairs" || /escada lateral/i.test(r.label || ""));
@@ -2949,17 +3567,17 @@
     if (!startIds.length || !endIds.length) return list;
     const cross = buildCrossCampusFloorRoutes(NR, startIds, endIds, origin, dest);
     for (const r of cross) {
-      if (list.some((x) => isDuplicateRoute(x, r))) continue;
+      if (list.some((x) => isDuplicateRoute(x, r) || x.label === r.label)) continue;
       list.push(r);
     }
-    return list;
+    return list.sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
   }
 
   /** Térreo → Jardim: garante contorno do templo + rota pelo estabelecimento. */
   function ensureJardimRouteOptions(options, NR, origin, dest) {
     if (!NR || !state.navGraph || !isCfToJardimPair(origin, dest)) return options || [];
     let list = (options || []).slice();
-    const hasContour = list.some((r) => /contorno leste/i.test(r.label || ""));
+    const hasContour = list.some((r) => /corredor oeste|estacionamento \(leste\)|contorno leste/i.test(r.label || ""));
     const hasIndoor = list.some((r) => /estabelecimento|rgo|corredor/i.test(r.label || ""));
     if (hasContour && hasIndoor) return list;
     const extra = buildCfJardimRouteOptions(NR, origin, dest);
@@ -2982,6 +3600,7 @@
       if (startIds.length && endIds.length) {
         options = appendNamedExternalOptions(NR, startIds, endIds, origin, dest, options);
         options = ensureCfJardimNamedRoutes(NR, startIds, endIds, origin, dest, options);
+        options = ensureRgoConexaoNamedRoutes(NR, startIds, endIds, origin, dest, options);
       }
     }
 
@@ -2993,7 +3612,26 @@
     );
     options = ensureMinimumRouteOptions(options, NR, origin, dest);
     options = ensureCrossFloorRouteOptions(options, NR, origin, dest);
+    if (state.navGraph && NR && involvesAdmFloorCross(poiLevel(origin), poiLevel(dest))) {
+      const startIds = resolveTripNodeIds(origin, "origin");
+      const endIds = resolveTripNodeIds(dest, "dest");
+      if (startIds.length && endIds.length) {
+        const cross = buildCrossCampusFloorRoutes(NR, startIds, endIds, origin, dest);
+        for (const r of cross) {
+          if (options.some((x) => isDuplicateRoute(x, r) || x.label === r.label)) continue;
+          options.push(r);
+        }
+        options.sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
+      }
+    }
     options = ensureJardimRouteOptions(options, NR, origin, dest);
+    if (state.navGraph && NR && isRgoToConexaoPair(origin, dest)) {
+      const startIds = resolveTripNodeIds(origin, "origin");
+      const endIds = resolveTripNodeIds(dest, "dest");
+      if (startIds.length && endIds.length) {
+        options = ensureRgoConexaoNamedRoutes(NR, startIds, endIds, origin, dest, options);
+      }
+    }
     options = dedupeRouteOptionsStrict(options, NR, origin, dest);
     options.sort((a, b) => (a.length || 0) - (b.length || 0));
     options.forEach((r, i) => { r.rank = i + 1; });
@@ -3056,71 +3694,33 @@
       };
     };
 
-    const buildVia = (vias, label, slot) => {
-      const chain = [startIds[0], ...vias, endIds[0]];
-      const opts = { ...walkOpts, avoidParking: false };
-      const legs = [];
-      for (let i = 0; i < chain.length - 1; i++) {
-        let leg = NR.astar(chain[i], [chain[i + 1]], state.navGraph, opts);
-        if (!leg && walkOpts.avoidParking) {
-          leg = NR.astar(chain[i], [chain[i + 1]], state.navGraph, { ...opts, avoidParking: false });
-        }
-        if (!leg) return null;
-        legs.push(leg);
-      }
-      const merged = concatNavLegs(...legs);
-      return merged ? wrapLeg(merged, label, slot, true) : null;
-    };
-
+    const dKey = poiRawKey(dest);
+    const isGardenDest = isGardenAccessPoi(dest) || dKey === "P016_jardim" || dKey === "P020_espaco_servir";
     const out = [];
-    let shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, walkOpts);
-    if (!shortest.length && walkOpts.avoidParking) {
-      shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, { ...walkOpts, avoidParking: false });
-    }
-    const best = wrapLeg(shortest[0], "Rota 1 — Mais curta", 1, false);
-    if (best) out.push(best);
 
-    const specs = [
-      {
-        label: CF_JARDIM_NAMED_LABELS[0],
-        slot: 2,
-        via: [
-          "L00_node_0043",
-          "L00_node_0044",
-          "L00_node_0046",
-          "L00_node_0031",
-          "L00_node_0065",
-          "L00_node_0054_sevenpass",
-          "L00_node_0056",
-          "L00_node_0032",
-          "L00_node_0022_estacionamento_01",
-          "L00_node_0034",
-        ],
-      },
-      {
-        label: CF_JARDIM_NAMED_LABELS[1],
-        slot: 3,
-        via: [
-          "L00_node_0046",
-          "L00_node_0031",
-          "L00_node_0065",
-          "L00_node_0029_recepcao",
-          "L00_node_0034",
-        ],
-      },
-    ];
-
-    for (const spec of specs) {
-      let route = buildVia(spec.via, spec.label, spec.slot);
-      if (!route) {
-        const cfgSpec = (CONFIG.namedExternalRoutes || []).find((r) => r.label === spec.label);
-        if (cfgSpec) route = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, cfgSpec);
-        if (route) {
-          route.forceInclude = true;
-          route.slot = spec.slot;
-        }
+    if (!isGardenDest) {
+      let shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, walkOpts);
+      if (!shortest.length && walkOpts.avoidParking) {
+        shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, { ...walkOpts, avoidParking: false });
       }
-      if (route) out.push(route);
+      const best = wrapLeg(shortest[0], "Rota 1 — Mais curta", 1, false);
+      if (best) out.push(best);
+    }
+
+    const labelList = isGardenDest && dKey === "P020_espaco_servir"
+      ? CF_SERVIR_NAMED_LABELS
+      : CF_JARDIM_NAMED_LABELS;
+    const specs = (CONFIG.namedExternalRoutes || [])
+      .filter((r) => labelList.includes(r.label))
+      .sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
+
+    for (const cfgSpec of specs) {
+      const route = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, cfgSpec);
+      if (!route) continue;
+      route.forceInclude = true;
+      route.slot = cfgSpec.slot;
+      route.label = cfgSpec.label || route.label;
+      out.push(route);
     }
 
     return out.sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
@@ -3182,9 +3782,11 @@
         r.kind = "stairs";
         r.namedExternal = true;
         r.viaStairs = true;
-        r.label = "Pela escada lateral";
+        r.label = STAIRS_T_LABEL;
       } else if (r.kind === "elevator") {
-        r.label = r.label || "Pelo elevador";
+        r.label = r.label || ELEVATOR_T_LABEL;
+      } else if (r.viaStairs || r.kind === "stairs") {
+        r.label = r.label || STAIRS_T_LABEL;
       } else if (r.namedExternal) {
         r.kind = "fora";
         r.label = r.label || "Por fora da igreja";
@@ -3239,6 +3841,7 @@
     if (origin && dest) {
       list = list.filter((r) => {
         if (r.kind === "templo" && r.fromJson && (r.edgeIds?.length >= 1)) return true;
+        if (r.namedExternal && r.forceInclude) return true;
         if (!isRouteWallSafe(r, origin, dest)) return false;
         const lvl = poiLevel(origin) === poiLevel(dest) ? (poiLevel(origin) || "L00") : "L00";
         const pts = r.points || [];
@@ -3326,7 +3929,8 @@
     if (!vias.length) return null;
     const preferredEnds = (Array.isArray(spec.endNodes) ? spec.endNodes : [])
       .filter((id) => state.navGraph.nodesById.has(id));
-    let ends = preferredEnds.length ? preferredEnds : endIds;
+    const gardenEnd = gardenOfficialEndNodeId(dest);
+    let ends = gardenEnd ? [gardenEnd] : (preferredEnds.length ? preferredEnds : endIds);
     const allowPark = spec.allowParking === true || spec.avoidParking === false;
 
     // Inverte waypoints quando origem/destino estão na ordem b→a do spec
@@ -3433,17 +4037,44 @@
     return appendAdmStairOption(NR, startIds, endIds, origin, dest, list);
   }
 
-  /** Garante as 2 rotas de campus CF → Jardim (contorno + corredor). */
+  /** Garante as rotas de campus CF/RGO → Jardim / Espaço Servir. */
   function ensureCfJardimNamedRoutes(NR, startIds, endIds, origin, dest, packed) {
     if (!isCfToJardimPair(origin, dest)) return packed;
     let list = packed ? packed.slice() : [];
-    for (const label of CF_JARDIM_NAMED_LABELS) {
+    const labelList = poiRawKey(dest) === "P020_espaco_servir"
+      ? CF_SERVIR_NAMED_LABELS
+      : CF_JARDIM_NAMED_LABELS;
+    for (const label of labelList) {
       if (list.some((r) => r.label === label)) continue;
       const spec = (CONFIG.namedExternalRoutes || []).find((r) => r.label === label);
       if (!spec) continue;
       const external = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, spec);
       if (!external) continue;
       external.slot = spec.slot;
+      list.push(external);
+    }
+    list.sort((a, b) => {
+      const sa = a.slot ?? (a.namedExternal ? 50 : 0);
+      const sb = b.slot ?? (b.namedExternal ? 50 : 0);
+      if (sa !== sb) return sa - sb;
+      return (a.length || 0) - (b.length || 0);
+    });
+    return list;
+  }
+
+  /** Garante RGO → Espaço conexão: corredor interno (linha vermelha). */
+  function ensureRgoConexaoNamedRoutes(NR, startIds, endIds, origin, dest, packed) {
+    if (!isRgoToConexaoPair(origin, dest)) return packed;
+    let list = packed ? packed.slice() : [];
+    if (list.some((r) => r.label === RGO_CONEXAO_NAMED_LABEL)) return list;
+    const spec = (CONFIG.namedExternalRoutes || []).find((r) => r.label === RGO_CONEXAO_NAMED_LABEL);
+    if (!spec) return list;
+    const external = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, spec);
+    if (!external) return list;
+    external.slot = spec.slot;
+    external.forceInclude = true;
+    external.label = spec.label;
+    if (!list.some((r) => isDuplicateRoute(r, external) || r.label === external.label)) {
       list.push(external);
     }
     list.sort((a, b) => {
@@ -3465,17 +4096,17 @@
 
     const stairRoute = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, {
       via,
-      label: "Pela escada lateral",
+      label: STAIRS_T_LABEL,
       avoidParking: false,
       allowParking: true,
       bannedTypes: ["elevator"],
-      slot: 4,
+      slot: 2,
     });
     if (!stairRoute) return packed;
 
     stairRoute.viaStairs = true;
     stairRoute.kind = "stairs";
-    stairRoute.label = "Pela escada lateral";
+    stairRoute.label = STAIRS_T_LABEL;
     stairRoute.namedExternal = true;
 
     const list = packed ? packed.slice() : [];
@@ -3493,8 +4124,9 @@
     const maxSpurD = tol("spurTol", poiToleranceZone(dest));
     const oOfficial = poiUsesOfficialRouteAnchor(origin);
     const dOfficial = poiUsesOfficialRouteAnchor(dest);
+    const destCampus = CONFIG.poiIconCampus?.[poiRawKey(dest)];
     const o = oOfficial ? poiRouteAnchor(origin) : poiIcon(origin);
-    const d = (dOfficial || isTemplePoi(dest)) ? poiRouteAnchor(dest) : poiIcon(dest);
+    const d = ((dOfficial && !destCampus) || isTemplePoi(dest)) ? poiRouteAnchor(dest) : poiIcon(dest);
     const oLvl = origin?.level || poiLevel(origin);
     const dLvl = dest?.level || poiLevel(dest);
     const sameFloor = oLvl && dLvl && oLvl === dLvl;
@@ -3522,12 +4154,29 @@
     if (sameFloor && o && !oOfficial && dist(o, pts[0]) > 0.8 && dist(o, pts[0]) <= maxSpurO) {
       if (!crossesWall(o, pts[0], oLvl)) pts.unshift({ x: o.x, y: o.y });
     }
-    if (sameFloor && d && !dOfficial && dist(pts[pts.length - 1], d) > 0.8) {
+    const dSpurToIcon = !dOfficial || !!destCampus || isGardenAccessPoi(dest);
+    const gardenDest = isGardenAccessPoi(dest);
+    const spurMaxD = gardenDest ? Math.max(maxSpurD, 95) : maxSpurD;
+    if (sameFloor && d && dSpurToIcon && !gardenDest && dist(pts[pts.length - 1], d) > 0.8) {
       if (isTemplePoi(dest) || isTempleEntrancePoi(dest)) return pts;
       const tip = pts[pts.length - 1];
-      if (dist(tip, d) <= maxSpurD && !crossesWall(tip, d, dLvl)) {
+      if (dist(tip, d) <= spurMaxD && !crossesWall(tip, d, dLvl)) {
         pts.push({ x: d.x, y: d.y });
       }
+    }
+    if (sameFloor && routePolylineCrossesWall(pts, oLvl || dLvl || "L00")) {
+      while (pts.length >= 2 && crossesWall(pts[0], pts[1], oLvl || dLvl)) pts.shift();
+      while (pts.length >= 2 && crossesWall(pts[pts.length - 2], pts[pts.length - 1], dLvl || oLvl)) pts.pop();
+    }
+    if (sameFloor && gardenDest) {
+      const anchor = poiRouteAnchor(dest);
+      if (anchor) {
+        const tip = pts[pts.length - 1];
+        if (dist(tip, anchor) > 0.8 && dist(tip, anchor) <= spurMaxD && !crossesWall(tip, anchor, dLvl)) {
+          pts.push({ x: anchor.x, y: anchor.y });
+        }
+      }
+      return appendPoiRouteEdgeIcon(pts, dest, dLvl);
     }
     return pts;
   }
@@ -3578,11 +4227,16 @@
       leg.points = [];
       if (leg.edgeIds.length >= 1 && leg.nodeIds.length >= 2 && NR?.buildRoutePoints) {
         try {
-          const built = NR.buildRoutePoints(leg.edgeIds, leg.nodeIds, state.navGraph.edgesById);
+          const built = NR.buildRoutePoints(
+            leg.edgeIds,
+            leg.nodeIds,
+            state.navGraph.edgesById,
+            state.navGraph.nodesById,
+          );
           if (built?.length >= 2) leg.points = built;
         } catch { /* tenta montar pelos paths das edges */ }
         if ((leg.points?.length || 0) < 2) {
-          const stitched = stitchEdgePaths(leg.edgeIds);
+          const stitched = buildMeshPaintPoints(leg.edgeIds, leg.nodeIds);
           if (stitched) leg.points = stitched;
         }
       }
@@ -3611,10 +4265,15 @@
     const edgeIds = (route.edgeIds || []).slice(start, end);
     if (nodeIds.length >= 2 && edgeIds.length >= 1 && NR?.buildRoutePoints) {
       try {
-        const built = NR.buildRoutePoints(edgeIds, nodeIds, state.navGraph.edgesById);
+        const built = NR.buildRoutePoints(
+          edgeIds,
+          nodeIds,
+          state.navGraph.edgesById,
+          state.navGraph.nodesById,
+        );
         if (built?.length >= 2) return built;
       } catch { /* tenta montar pelos paths das edges */ }
-      const stitched = stitchEdgePaths(edgeIds);
+      const stitched = buildMeshPaintPoints(edgeIds, nodeIds);
       if (stitched) return stitched;
     }
     return null;
@@ -3669,9 +4328,12 @@
       if (sliced?.length >= 2) {
         pts = sliced.map((p) => ({ x: p.x, y: p.y }));
       } else if (shouldUseFullRoutePolyline(lvl, oLvl, dLvl)) {
-        pts = state.route.points
+        const candidate = state.route.points
           .map((p) => ({ x: p.x, y: p.y }))
           .filter((p) => isFinite(p.x) && isFinite(p.y));
+        if (candidate.length >= 2 && !routePolylineCrossesWall(candidate, lvl)) {
+          pts = candidate;
+        }
       } else {
         const fb = buildFloorLegFallbackPoints(lvl, state.origin, state.dest);
         if (fb?.points?.length >= 2) {
@@ -3731,6 +4393,15 @@
       pts = refineNarniaEndpoint(pts, gateLvl, "end");
     }
 
+    pts = sanitizeRoutePaintPoints(pts, leg, state.route, lvl);
+    if (state.route?.kind === "templo" && oLvl === dLvl && dLvl === lvl) {
+      pts = ensureTempleEntranceRouteEndpoint(pts, state.route, lvl);
+    }
+    if (isGardenAccessPoi(state.dest) && oLvl === dLvl && dLvl === lvl) {
+      pts = ensureGardenRouteNodeEndpoint(pts, state.dest, lvl, state.route, leg);
+    }
+    pts = removePointBacktracks(pts);
+
     const a = pts[0];
     const b = pts[pts.length - 1];
     paintRouteOnMap(pts.map((p) => `${p.x},${p.y}`).join(" "), a, b, pts);
@@ -3743,6 +4414,30 @@
       nodeId: e.nodeId,
       label: e.label,
     }));
+  }
+
+  function matchRouteSide(side, key) {
+    if (Array.isArray(side)) {
+      return side.some((item) => {
+        const t = String(item);
+        return t === key || t.toLowerCase() === key.toLowerCase()
+          || key.endsWith(t) || t.endsWith(key);
+      });
+    }
+    return side === key;
+  }
+
+  /** Percurso fixo (POI edge) para uma entrada do Templo — ex.: CF → Entrada 4 pelo jardim. */
+  function templeEntranceRouteSpec(origin, gate) {
+    const aKey = poiRawKey(origin);
+    const gateBase = nodeIdBase(gate.nodeId || gate.id);
+    for (const spec of CONFIG.templeEntranceRoutes || []) {
+      if (!matchRouteSide(spec.a, aKey)) continue;
+      const specGate = nodeIdBase(spec.entranceNodeId || spec.endNode || "");
+      if (specGate && specGate !== gateBase) continue;
+      return spec;
+    }
+    return null;
   }
 
   /** Rota única com início/fim exatamente no node da entrada oficial do Templo. */
@@ -3891,16 +4586,47 @@
     for (const gate of gates) {
       const node = state.navGraph.nodesById.get(gate.id);
       if (!node) continue;
+      const campus = CONFIG.templeEntranceIconCampus?.[gate.nodeId]
+        || CONFIG.templeEntranceIconCampus?.[nodeIdBase(gate.nodeId)];
       const destAtGate = {
         ...dest,
         anchor: gate.id,
         snap: { x: node.x, y: node.y },
-        x: node.x,
-        y: node.y,
-        iconX: node.x,
-        iconY: node.y,
+        x: campus?.x ?? node.x,
+        y: campus?.y ?? node.y,
+        iconX: campus?.x ?? node.x,
+        iconY: campus?.y ?? node.y,
         entranceLabel: gate.label,
       };
+
+      const customSpec = templeEntranceRouteSpec(origin, gate);
+      if (customSpec?.via?.length) {
+        const endResolved = resolveGraphNodeId(customSpec.endNode || gate.id) || gate.id;
+        const built = buildNamedExternalRoute(NR, startIds, [endResolved], origin, destAtGate, {
+          a: customSpec.a,
+          b: ["P000_templo"],
+          via: customSpec.via,
+          endNodes: [endResolved],
+          label: gate.label,
+          allowParking: customSpec.allowParking !== false,
+          avoidParking: customSpec.avoidParking,
+        });
+        if (built?.points?.length >= 2) {
+          built.points = appendPoiRouteEdgeIcon(built.points, destAtGate, "L00");
+          built.kind = "templo";
+          built.entranceId = endResolved;
+          built.label = gate.label;
+          built.namedExternal = false;
+          built.fromJson = true;
+          const sig = (built.edgeIds || []).join(">");
+          if (sig) seenSig.add(sig);
+          collected.push({
+            ...built,
+            rank: collected.length + 1,
+          });
+          continue;
+        }
+      }
 
       let found = NR.findRoutesForPoiPair(startIds, [gate.id], state.navGraph, {
         preference: "shortest",
@@ -4147,6 +4873,7 @@
     let packed = pack(routes);
     packed = appendNamedExternalOptions(NR, startIds, endIds, origin, dest, packed);
     packed = ensureCfJardimNamedRoutes(NR, startIds, endIds, origin, dest, packed);
+    packed = ensureRgoConexaoNamedRoutes(NR, startIds, endIds, origin, dest, packed);
     return finalizePackedRoutes(packed, NR, origin, dest);
   }
 
@@ -4354,7 +5081,8 @@
     try {
       const fileEntries = Object.entries(CONFIG.svgFiles);
       const loaded = await Promise.all(fileEntries.map(async ([key, url]) => {
-        const res = await fetch(url, { cache: "no-store" });
+        const bustUrl = appAssetUrl(url);
+        const res = await fetch(bustUrl, { cache: "no-store" });
         if (!res.ok) throw new Error(`Falha ao carregar ${url}: HTTP ${res.status}`);
         const text = await res.text();
         const doc = new DOMParser().parseFromString(text, "image/svg+xml");
@@ -5722,6 +6450,7 @@
     });
 
     rebuildL00PoiIndex();
+    injectHiddenRoutePois();
 
     G.pois.forEach((poi) => {
       if (poi.fromLayerIndex || l00()?.hasOfficialLayerNode(poi)) return;
@@ -6174,7 +6903,7 @@
     if (!svg) return;
     for (const poi of G.pois || []) {
       const raw = poi.rawId || poi.id || "";
-      const campus = CONFIG.poiIconCampus?.[raw];
+      const campus = resolvePoiIconCampus(poi);
       if (!campus) continue;
       const hit = svg.querySelector(`[data-poi-hit="${raw}"]`);
       if (hit) {
@@ -6208,8 +6937,9 @@
         }
         const poi = G.pois.find((p) => p.id === poiId);
         if (!poi || !isSearchablePoi(poi)) return;
+        poi = resolveCampusPoiForUi(poi);
         enrichTripPoi(poi);
-        const lvl = poiLevel(poi);
+        const lvl = poiMapViewLevel(poi);
         if (lvl !== state.activeLevel) setActiveLevel(lvl, { silent: true, keepTrip: true });
         if (!state.origin || state.origin.id === "__here__") setField("origin", poi);
         else setField("dest", poi);
@@ -7195,11 +7925,11 @@
     F: '<path d="M6 20V9l6-3 6 3v11M9 20v-5h6v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>',
   };
 
-  const WALK_PICTOGRAM_SRC = "assets/icon-walk-map.png?v=207";
+  const WALK_PICTOGRAM_SRC = () => appAssetUrl("assets/icon-walk-map.png");
 
   function walkPictogramMarkup(size) {
     const s = size || 22;
-    return `<img class="step-walk-pictogram walk-pictogram" src="${WALK_PICTOGRAM_SRC}" width="${s}" height="${s}" alt="" aria-hidden="true" decoding="async" />`;
+    return `<img class="step-walk-pictogram walk-pictogram" src="${WALK_PICTOGRAM_SRC()}" width="${s}" height="${s}" alt="" aria-hidden="true" decoding="async" />`;
   }
 
   function guideStepsList() {
@@ -7618,6 +8348,10 @@
     const n = state.routeOptions.length;
     if (isCfToJardimPair(state.origin, state.dest) && n >= 2) {
       toast(`${n} rotas CF → Jardim — toque nas opções abaixo para alternar.`);
+    } else if (isRgoToConexaoPair(state.origin, state.dest) && n >= 2) {
+      toast(`${n} rotas RGO → Espaço conexão — toque nas opções abaixo para alternar.`);
+    } else if (involvesAdmFloorCross(poiLevel(state.origin), poiLevel(state.dest)) && n >= 2) {
+      toast(`${n} rotas — Elevador T ou Escadas laterais T. Toque nas opções abaixo.`);
     } else if (isTempleDestination(state.dest) && n >= 2) {
       toast(`${n} entradas do Templo — toque nas opções abaixo para escolher.`);
     } else {
@@ -7699,7 +8433,10 @@
     const NR = globalThis.NavigationRouter;
     let options = state.routeOptions || [];
     const cfForced = isCfToJardimPair(state.origin, state.dest) && options.some((r) => r.forceInclude);
-    if (!cfForced) {
+    const rgoConexaoForced = isRgoToConexaoPair(state.origin, state.dest) && options.some((r) => r.forceInclude);
+    const crossFloorForced = involvesAdmFloorCross(poiLevel(state.origin), poiLevel(state.dest))
+      && options.some((r) => r.forceInclude && (r.kind === "elevator" || r.kind === "stairs" || r.viaStairs));
+    if (!cfForced && !rgoConexaoForced && !crossFloorForced) {
       options = dedupeRouteOptionsStrict(options, NR, state.origin, state.dest);
     }
     if (options.length !== (state.routeOptions || []).length) {
@@ -7721,7 +8458,11 @@
     if (el.routePickLabel) {
       el.routePickLabel.textContent = cfForced
         ? "Opções de rota · CF → Jardim"
-        : templeTrip
+        : rgoConexaoForced
+          ? "Opções de rota · RGO → Espaço conexão"
+          : crossFloorForced
+            ? "Opções de rota · Elevador T / Escadas laterais"
+            : templeTrip
           ? "Opções de rota · Templo"
           : "Opções de rota";
     }
@@ -7777,7 +8518,7 @@
 
   function setField(which, poi) {
     if (!poi) return;
-    poi = enrichTripPoi({ ...poi });
+    poi = enrichTripPoi({ ...resolveCampusPoiForUi(poi) });
     const GFRM = gfr();
     // destino em outro andar sem origem → elevador do andar atual
     if (which === "dest" && !state.origin && poi) {
@@ -7810,13 +8551,13 @@
       drawRoute();
       return;
     }
-    if (poi && poiLevel(poi) !== state.activeLevel) {
-      const poiLvl = poiLevel(poi);
-      const originLvl = state.origin ? poiLevel(state.origin) : null;
-      if (which === "dest" && isBasementFloor(poiLvl) && originLvl && !isBasementFloor(originLvl)) {
+    if (poi && poiMapViewLevel(poi) !== state.activeLevel) {
+      const viewLvl = poiMapViewLevel(poi);
+      const originLvl = state.origin ? poiMapViewLevel(state.origin) : null;
+      if (which === "dest" && isBasementFloor(poiLevel(poi)) && originLvl && !isBasementFloor(originLvl)) {
         setActiveLevel(originLvl, { silent: true, keepTrip: true });
       } else {
-        setActiveLevel(poiLvl, { silent: true, keepTrip: true });
+        setActiveLevel(viewLvl, { silent: true, keepTrip: true });
       }
     }
   }
@@ -8692,6 +9433,7 @@
     const floor = floorById(state.activeLevel) || { id: "L00", title: "Térreo", ready: true };
     if (el.floorHint) {
       el.floorHint.textContent = `${formatFloorTag(floor.id)} — ${floor.title}`;
+      showBuildBadge();
     }
     if (el.floorBtn) {
       el.floorBtn.title = `Escolha o Andar · atual: ${formatFloorTag(floor.id)}`;
@@ -8745,7 +9487,7 @@
   async function ensureFloorSvg(floor) {
     if (!floor?.mapUrl) return null;
     if (state.floorViews[floor.id]) return state.floorViews[floor.id];
-    const res = await fetch(floor.mapUrl, { cache: "no-store" });
+    const res = await fetch(appAssetUrl(floor.mapUrl), { cache: "no-store" });
     if (!res.ok) throw new Error(`Falha ao carregar ${floor.mapUrl}: HTTP ${res.status}`);
     const text = await res.text();
     const doc = new DOMParser().parseFromString(text, "image/svg+xml");
@@ -9463,5 +10205,7 @@
   initTheme();
   initBrowseFilters();
   bind();
+  showBuildBadge();
+  watchBuildUpdates();
   loadSVG();
 })();

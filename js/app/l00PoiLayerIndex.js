@@ -20,8 +20,12 @@
       aliases: ["moto", "motos", "estacionamento moto", "estacionamento de motos"],
     },
     elevador_templo: {
-      displayName: "Elevador do Templo",
-      aliases: ["elevador", "elevador templo", "elevadores"],
+      displayName: "Elevadores T",
+      aliases: ["elevador", "elevador t", "elevador templo", "elevadores", "elevadores t"],
+    },
+    escada_lateral: {
+      displayName: "Escadas laterais T",
+      aliases: ["escada lateral", "escadas laterais", "escadas laterais t", "escada lateral t"],
     },
     min_esportes: {
       displayName: "Ministério de Esportes",
@@ -148,6 +152,18 @@
       nodeId: "L00_node_0042",
       poiRawId: "P005_centro_de_formacao",
     },
+    escada_lateral_t: {
+      displayName: "Escadas laterais T",
+      aliases: [
+        "escada lateral",
+        "escadas laterais",
+        "escadas laterais t",
+        "escada lateral t",
+        "escadas t",
+      ],
+      nodeId: "L00_node_0079",
+      poiRawId: "L00_escadas_laterais_t",
+    },
   };
 
   const MULTI_ACCESS_LOCATIONS = {
@@ -158,8 +174,8 @@
       nodeIds: [
         "L00_node_0088",
         "L00_node_0072",
-        "L00_node_0033",
         "L00_node_0015",
+        "L00_node_0036",
         "L00_node_0018",
       ],
       accessLabels: [

@@ -22,8 +22,8 @@
       accesses: [
         { label: "Templo — Entrada 1", nodeId: "L00_node_0088" },
         { label: "Templo — Entrada 2", nodeId: "L00_node_0072" },
-        { label: "Templo — Entrada 3", nodeId: "L00_node_0033" },
-        { label: "Templo — Entrada 4", nodeId: "L00_node_0015" },
+        { label: "Templo — Entrada 3", nodeId: "L00_node_0015" },
+        { label: "Templo — Entrada 4", nodeId: "L00_node_0036" },
         { label: "Templo — Entrada 5", nodeId: "L00_node_0018" },
       ],
     },
@@ -37,14 +37,14 @@
     {
       id: "espacoServir",
       label: "Espaço Servir",
-      nodeId: "L00_node_0035",
+      nodeId: "L00_node_0035_espaco_servir",
       searchTerms: ["espaco servir", "espaço servir", "servir"],
       poiRawIds: ["P020_espaco_servir"],
     },
     {
       id: "jardim",
       label: "Jardim",
-      nodeId: "L00_node_0037",
+      nodeId: "L00_node_0037_jardim",
       searchTerms: ["jardim"],
       poiRawIds: ["P016_jardim"],
     },
@@ -84,7 +84,8 @@
       id: "escadaLateral",
       label: "Escadas laterais T",
       nodeId: "L00_node_0079_escada_lateral_",
-      searchTerms: ["escada lateral", "escadas laterais", "escadas"],
+      searchTerms: ["escada lateral", "escadas laterais", "escadas laterais t", "escada lateral t", "escadas"],
+      poiRawIds: ["L00_escadas_laterais_t", "gfr-escadaLateral"],
     },
     {
       id: "escadaEmergencia",
@@ -373,12 +374,16 @@
       return null;
     }
     const node = navGraph?.nodesById?.get(resolved) || gNodes?.[resolved];
+    const campus = global.CONFIG?.templeEntranceIconCampus?.[baseId]
+      || global.CONFIG?.templeEntranceIconCampus?.[resolved];
     return {
       nodeId: baseId,
       graphNodeId: resolved,
       label: access.label,
       x: node?.x,
       y: node?.y,
+      routeIconX: campus?.x,
+      routeIconY: campus?.y,
     };
   }
 
@@ -446,6 +451,8 @@
 
   function buildAccessPoi(area, validatedAccess) {
     const id = `gfr-${area.id}-${validatedAccess.nodeId}`;
+    const iconX = validatedAccess.routeIconX ?? validatedAccess.x;
+    const iconY = validatedAccess.routeIconY ?? validatedAccess.y;
     return {
       id,
       rawId: id,
@@ -464,10 +471,10 @@
       anchor: validatedAccess.graphNodeId,
       navNodeIds: [validatedAccess.graphNodeId],
       snap: { x: validatedAccess.x, y: validatedAccess.y },
-      x: validatedAccess.x,
-      y: validatedAccess.y,
-      iconX: validatedAccess.x,
-      iconY: validatedAccess.y,
+      x: iconX,
+      y: iconY,
+      iconX,
+      iconY,
     };
   }
 
@@ -492,9 +499,14 @@
   function buildSingleAreaPoi(area, validated, navGraph, gNodes) {
     const acc = validated || validateAccess({ nodeId: area.nodeId, label: area.label }, navGraph, gNodes, null);
     if (!acc) return null;
+    const raw = area.poiRawIds?.[0] || `gfr-${area.id}`;
+    const campus = global.CONFIG?.poiRouteEdges?.[raw]?.icon
+      || global.CONFIG?.poiIconCampus?.[raw];
+    const iconX = campus?.x ?? acc.x;
+    const iconY = campus?.y ?? acc.y;
     return {
       id: `gfr-${area.id}`,
-      rawId: area.poiRawIds?.[0] || `gfr-${area.id}`,
+      rawId: raw,
       name: area.label,
       searchLabel: area.label,
       level: LEVEL,
@@ -509,10 +521,10 @@
       anchor: acc.graphNodeId,
       navNodeIds: [acc.graphNodeId],
       snap: { x: acc.x, y: acc.y },
-      x: acc.x,
-      y: acc.y,
-      iconX: acc.x,
-      iconY: acc.y,
+      x: iconX,
+      y: iconY,
+      iconX,
+      iconY,
     };
   }
 
