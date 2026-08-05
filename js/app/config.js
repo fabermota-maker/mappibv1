@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "285",
+    appBuild: "288",
     showAllInfoTexts: true,
     /** URL com cache-bust automático (usa appBuild). */
     appAssetUrl(path) {
@@ -124,6 +124,11 @@
     ],
     /** Trecho oficial malha → ícone (POI edge) — rota e clique no ponto visível do mapa. */
     poiRouteEdges: {
+      P016_jardim: {
+        anchor: "L00_node_0037_jardim",
+        meshEdgeIds: ["L00_edge_0038_node_0036_node_0037"],
+        icon: { x: 133.83, y: 768.84 },
+      },
       P020_espaco_servir: {
         anchor: "L00_node_0035_espaco_servir",
         meshEdgeIds: ["L00_edge_0037_node_0036_node_0035"],
@@ -145,7 +150,8 @@
         icon: { x: 397.22, y: 511.24 },
       },
     },
-    herePoiSnapRadius: 70,
+    /** Impede prolongamento horizontal leste após a curva do Jardim (0037 → 0036). */
+    jardimRouteBlockedEdges: ["L00_edge_0038_node_0036_node_0037"],
     // POIs removidos do mapa — bloqueia ressurgência via cache SVG antigo
     hiddenPoiRawIds: [
       "P000_templo",
@@ -274,13 +280,23 @@
       },
       {
         a: ["P005_centro_de_formacao"],
-        b: ["P016_jardim", "P020_espaco_servir"],
+        b: ["P016_jardim"],
+        max: 3,
+      },
+      {
+        a: ["P005_centro_de_formacao"],
+        b: ["P020_espaco_servir"],
+        max: 4,
+      },
+      {
+        a: ["P004_sala_de_oracao_RGO"],
+        b: ["P016_jardim"],
         max: 3,
       },
       {
         a: ["P004_sala_de_oracao_RGO"],
-        b: ["P016_jardim", "P020_espaco_servir"],
-        max: 3,
+        b: ["P020_espaco_servir"],
+        max: 4,
       },
       {
         a: ["P004_sala_de_oracao_RGO"],
@@ -454,21 +470,51 @@
         allowParking: true,
         slot: 2,
       },
-      // CF / L00 → Jardim (opção 2): corredor do estabelecimento (sem entrar nas salas)
+      // CF / RGO → Jardim: entrada comum no topo → descida vertical pelo jardim
       {
         a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
         b: ["P016_jardim"],
+        via: ["L00_node_0085"],
+        endNodes: ["L00_node_0037_jardim"],
+        label: "Pelo jardim (vertical)",
+        avoidParking: false,
+        allowParking: true,
+        slot: 2,
+      },
+      // CF / RGO / Estou aqui → Espaço Servir: pelo interior (recepção → conexão → Servir)
+      {
+        a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
+        b: ["P020_espaco_servir"],
+        via: [
+          "L00_node_0046",
+          "L00_node_0031",
+          "L00_node_0065",
+          "L00_node_0029_recepcao",
+          "L00_node_0077",
+          "L00_node_0084",
+          "L00_node_0082_espaco_conexao",
+        ],
+        endNodes: ["L00_node_0035_espaco_servir"],
+        label: "Pelo estabelecimento (interior)",
+        avoidParking: false,
+        allowParking: true,
+        slot: 2,
+      },
+      // CF / L00 → Jardim: corredor do estabelecimento (sem entrar nas salas)
+      {
+        a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
+        b: ["P016_jardim", "P020_espaco_servir"],
         via: [
           "L00_node_0046",
           "L00_node_0031",
           "L00_node_0065",
           "L00_node_0029_recepcao",
         ],
-        endNodes: ["L00_node_0037_jardim"],
+        endNodes: ["L00_node_0037_jardim", "L00_node_0035_espaco_servir"],
         label: "Pelo estabelecimento (RGO)",
         avoidParking: false,
         allowParking: true,
-        slot: 3,
+        slot: 4,
       },
       // RGO → Espaço conexão: corredor interno (estabelecimento → recepção → conexão)
       {

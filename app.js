@@ -2490,7 +2490,9 @@
         || null;
     }
     if (parsed?.rawName === "jardim") {
-      return CONFIG.poiIconCampus?.P016_jardim || null;
+      return CONFIG.poiRouteEdges?.P016_jardim?.icon
+        || CONFIG.poiIconCampus?.P016_jardim
+        || null;
     }
     return poiRouteEdgeSpec(poi)?.icon
       || CONFIG.poiIconCampus?.[raw]
@@ -3017,6 +3019,55 @@
     return null;
   }
 
+  function jardimRouteCornerIcon() {
+    return CONFIG.poiRouteEdges?.P016_jardim?.icon || { x: 133.83, y: 768.84 };
+  }
+
+  function jardimRouteBlockedEdgeSet() {
+    return new Set(CONFIG.jardimRouteBlockedEdges || ["L00_edge_0038_node_0036_node_0037"]);
+  }
+
+  function withJardimRouteOpts(dest, opts = {}) {
+    if (poiRawKey(dest) !== "P016_jardim") return opts;
+    const blocked = jardimRouteBlockedEdgeSet();
+    const merged = opts.blockedEdges instanceof Set
+      ? new Set([...opts.blockedEdges, ...blocked])
+      : new Set([...(opts.blockedEdges || []), ...blocked]);
+    return { ...opts, blockedEdges: merged };
+  }
+
+  /** Corta trecho horizontal leste (0037→0036) — rota para no ponto amarelo da curva. */
+  function truncateRouteAtJardimCorner(route, dest) {
+    if (!route || poiRawKey(dest) !== "P016_jardim") return route;
+    const corner = jardimRouteCornerIcon();
+    const cornerId = gardenOfficialEndNodeId(dest) || "L00_node_0037_jardim";
+    if (route.nodeIds?.length) {
+      const idx = route.nodeIds.findIndex((id) => nodeIdBase(id) === nodeIdBase(cornerId));
+      if (idx >= 0 && idx < route.nodeIds.length - 1) {
+        route.nodeIds = route.nodeIds.slice(0, idx + 1);
+        if (route.edgeIds?.length > idx) route.edgeIds = route.edgeIds.slice(0, idx);
+      }
+    }
+    if (route.points?.length >= 2) {
+      const out = [];
+      for (let i = 0; i < route.points.length; i++) {
+        const p = route.points[i];
+        if (i > 0) {
+          const prev = out[out.length - 1];
+          const onBottom = Math.abs(p.y - corner.y) <= 6 && Math.abs(prev.y - corner.y) <= 6;
+          if (onBottom && prev.x <= corner.x + 4 && p.x > corner.x + 12) {
+            out.push({ x: corner.x, y: corner.y });
+            break;
+          }
+        }
+        out.push({ x: p.x, y: p.y });
+        if (dist(p, corner) <= 2.5) break;
+      }
+      if (out.length >= 2) route.points = out;
+    }
+    return route;
+  }
+
   /** Nós + edges usados na pintura (malha completa quando a perna é só um trecho). */
   function routePaintMesh(leg, route) {
     const legNodes = leg?.nodeIds || [];
@@ -3142,10 +3193,27 @@
     return out;
   }
 
-  /** Prolonga a polyline até o nó da malha (corredor L00), sem desviar ao ícone. */
+  /** Prolonga a polyline até o nó da malha (corredor L00), sem desviar ao ícone decorativo. */
   function ensureGardenRouteNodeEndpoint(pts, dest, levelId, route, leg) {
     if (!pts?.length || !isGardenAccessPoi(dest)) return pts;
     let out = appendGardenMeshTail(pts, route, leg, dest, levelId);
+    const dKey = poiRawKey(dest);
+    const routeEdge = poiRouteEdgeSpec(dest);
+    if (dKey === "P016_jardim" && routeEdge?.icon) {
+      const tip = out[out.length - 1];
+      if (dist(tip, routeEdge.icon) <= 0.8) return out;
+      const spurMax = Math.max(tol("spurTol", poiToleranceZone(dest)), 80);
+      const mid = { x: routeEdge.icon.x, y: tip.y };
+      if (dist(tip, mid) > 0.8 && dist(tip, mid) <= spurMax && !crossesWall(tip, mid, levelId)) {
+        out = out.concat([mid]);
+      }
+      const tip2 = out[out.length - 1];
+      if (dist(tip2, routeEdge.icon) > 0.8 && dist(tip2, routeEdge.icon) <= spurMax
+        && !crossesWall(tip2, routeEdge.icon, levelId)) {
+        out = out.concat([{ x: routeEdge.icon.x, y: routeEdge.icon.y }]);
+      }
+      return out;
+    }
     const anchor = poiRouteAnchor(dest);
     if (!anchor) return out;
     const tip = out[out.length - 1];
@@ -3423,12 +3491,14 @@
 
   const CF_JARDIM_NAMED_LABELS = [
     "Corredor oeste · Jardim/Servir",
+    "Pelo jardim (vertical)",
     "Pelo estacionamento (leste)",
     "Pelo estabelecimento (RGO)",
   ];
 
   const CF_SERVIR_NAMED_LABELS = [
     "Corredor oeste · Jardim/Servir",
+    "Pelo estabelecimento (interior)",
     "Pelo estacionamento (leste)",
     "Entrada/saída · Av. Batel",
     "Pelo estabelecimento (RGO)",
@@ -3660,7 +3730,8 @@
   /** Monta rota CF → Jardim forçando contorno + corredor (ignora deduplicação genérica). */
   function buildCfJardimRouteOptions(NR, origin, dest) {
     if (!NR || !state.navGraph) return [];
-    const startIds = resolveTripNodeIds(origin, "origin");
+    const startRole = origin?.id === "__here__" ? "here" : "origin";
+    const startIds = resolveTripNodeIds(origin, startRole);
     const endIds = resolveTripNodeIds(dest, "dest");
     if (!startIds.length || !endIds.length) return [];
 
@@ -3698,12 +3769,13 @@
     const isGardenDest = isGardenAccessPoi(dest) || dKey === "P016_jardim" || dKey === "P020_espaco_servir";
     const out = [];
 
-    if (!isGardenDest) {
-      let shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, walkOpts);
+    {
+      const jardimOpts = withJardimRouteOpts(dest, walkOpts);
+      let shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, jardimOpts);
       if (!shortest.length && walkOpts.avoidParking) {
-        shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, { ...walkOpts, avoidParking: false });
+        shortest = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, { ...jardimOpts, avoidParking: false });
       }
-      const best = wrapLeg(shortest[0], "Rota 1 — Mais curta", 1, false);
+      const best = truncateRouteAtJardimCorner(wrapLeg(shortest[0], "Rota 1 — Mais curta", 0, false), dest);
       if (best) out.push(best);
     }
 
@@ -3723,7 +3795,9 @@
       out.push(route);
     }
 
-    return out.sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
+    return out
+      .map((r) => truncateRouteAtJardimCorner(r, dest))
+      .sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
   }
 
   function isDuplicateRoute(a, b) {
@@ -3894,6 +3968,7 @@
     if (origin && dest) {
       for (let i = 0; i < deduped.length; i++) {
         deduped[i] = applyRoutePolylineRefinement(deduped[i], origin, dest);
+        deduped[i] = truncateRouteAtJardimCorner(deduped[i], dest);
       }
     }
 
@@ -3968,6 +4043,7 @@
       } else if (Array.isArray(spec.blockedEdges) && spec.blockedEdges.length) {
         opts.blockedEdges = new Set(spec.blockedEdges);
       }
+      const routeOpts = withJardimRouteOpts(dest, opts);
       let best = null;
       for (const s of startIds) {
         if (!s || !state.navGraph.nodesById.has(s)) continue;
@@ -3977,7 +4053,7 @@
           const legs = [];
           let ok = true;
           for (let i = 0; i < waypoints.length - 1; i++) {
-            const leg = NR.astar(waypoints[i], [waypoints[i + 1]], state.navGraph, opts);
+            const leg = NR.astar(waypoints[i], [waypoints[i + 1]], state.navGraph, routeOpts);
             if (!leg) { ok = false; break; }
             legs.push(leg);
           }
@@ -4003,7 +4079,7 @@
     for (let i = 1; i < points.length; i++) length += dist(points[i - 1], points[i]);
     const mpu = getMetersPerUnit();
     const endGate = (CONFIG.templeEntrances || []).find((g) => g.id === best._endNode);
-    return {
+    return truncateRouteAtJardimCorner({
       points,
       length: mpu > 0 ? best.distanceMeters / mpu : length,
       distanceMeters: best.distanceMeters,
@@ -4016,7 +4092,7 @@
       viaEndNode: best._endNode || null,
       entranceLabel: endGate?.label || null,
       slot: spec.slot,
-    };
+    }, dest);
   }
 
   function appendNamedExternalOptions(NR, startIds, endIds, origin, dest, packed) {
@@ -8346,7 +8422,9 @@
     await selectRoute(preferredTempleRouteIndex(options, state.dest), true);
     updateSummaryChrome();
     const n = state.routeOptions.length;
-    if (isCfToJardimPair(state.origin, state.dest) && n >= 2) {
+    if (isCfToJardimPair(state.origin, state.dest) && poiRawKey(state.dest) === "P020_espaco_servir" && n >= 2) {
+      toast(`${n} rotas até o Espaço Servir — toque nas opções abaixo para alternar.`);
+    } else if (isCfToJardimPair(state.origin, state.dest) && n >= 2) {
       toast(`${n} rotas CF → Jardim — toque nas opções abaixo para alternar.`);
     } else if (isRgoToConexaoPair(state.origin, state.dest) && n >= 2) {
       toast(`${n} rotas RGO → Espaço conexão — toque nas opções abaixo para alternar.`);
