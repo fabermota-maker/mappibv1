@@ -3,6 +3,7 @@
 
   const CONFIG = globalThis.PIBMapConfig;
   if (CONFIG?.appBuild) document.documentElement.dataset.build = CONFIG.appBuild;
+  if (CONFIG?.isDev) document.documentElement.dataset.dev = "1";
 
   function appAssetUrl(path) {
     if (CONFIG?.appAssetUrl) return CONFIG.appAssetUrl(path);
@@ -23,7 +24,7 @@
         const remote = m?.[1];
         if (remote && remote !== CONFIG.appBuild) {
           sessionStorage.setItem("pibMapBuild", remote);
-          toast(`Nova versão (v${remote}) — recarregando…`);
+          toast(CONFIG?.isDev ? `Nova versão (v${remote}) — recarregando…` : "Atualizando mapa…");
           setTimeout(() => location.reload(), 700);
         }
       } catch { /* offline */ }
@@ -35,16 +36,23 @@
   }
 
   function showBuildBadge() {
-    if (!CONFIG?.appBuild || !el.floorHint) return;
-    el.floorHint.dataset.build = CONFIG.appBuild;
-    let tag = el.floorHint.querySelector(".build-tag");
-    if (!tag) {
-      tag = document.createElement("span");
-      tag.className = "build-tag";
-      tag.title = "Versão do mapa — confirme se as atualizações foram aplicadas";
-      el.floorHint.appendChild(tag);
+    if (!el.floorHint) return;
+    const tag = el.floorHint.querySelector(".build-tag");
+    if (!CONFIG?.isDev) {
+      tag?.remove();
+      delete el.floorHint.dataset.build;
+      return;
     }
-    tag.textContent = ` · v${CONFIG.appBuild}`;
+    if (!CONFIG?.appBuild) return;
+    el.floorHint.dataset.build = CONFIG.appBuild;
+    let badge = tag;
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "build-tag";
+      badge.title = "Versão do mapa — confirme se as atualizações foram aplicadas";
+      el.floorHint.appendChild(badge);
+    }
+    badge.textContent = ` · v${CONFIG.appBuild}`;
   }
   /* ============================================================ ELEMENTOS */
   const $ = (id) => document.getElementById(id);
@@ -81,6 +89,10 @@
     routePathBase: $("routePathBase"),
     routePathGlow: $("routePathGlow"),
     routeStart: $("routeStart"), routeEnd: $("routeEnd"), hereMarker: $("hereMarker"),
+    mapPickPinPreview: $("mapPickPinPreview"), mapPickPinOrigin: $("mapPickPinOrigin"),
+    mapPickPinDest: $("mapPickPinDest"), mapPickMenu: $("mapPickMenu"),
+    mapPickBtnOrigin: $("mapPickBtnOrigin"), mapPickBtnDest: $("mapPickBtnDest"),
+    mapPickActions: $("mapPickActions"), mapPickLoading: $("mapPickLoading"),
     zoomIn: $("zoomIn"), zoomOut: $("zoomOut"), fitBtn: $("fitBtn"), locBtn: $("locBtn"),
     gpsOrientBtn: $("gpsOrientBtn"), gpsOrientCancel: $("gpsOrientCancel"),
     gpsAccuracyHint: $("gpsAccuracyHint"),
@@ -101,7 +113,8 @@
     origin: null, dest: null, route: null, routeOptions: [], routeIdx: 0, routePickOpen: false,
     scale: 1, minScale: 0.2, maxScale: 8, panX: 0, panY: 0,
     drag: false, sx: 0, sy: 0, px: 0, py: 0, moved: false,
-    placingHere: false, here: null,
+    placingHere: false, placingHereField: "origin", here: null,
+    mapPickPreview: null, mapPickOrigin: null, mapPickDest: null, mapPickMenuAnchor: null,
     activeField: null, navIdx: 0, guideStepIdx: 0, heading: 0,
     calibration: null,
     navGraph: null,
@@ -155,8 +168,8 @@
     estacao: "estação",
     acolher: "acolher",
     jardim: "jardim",
-    capela: "capela",
-    templo: "templo",
+    bebedouduro: "bebedouro",
+    agua: "água",
     esportes: "esportes",
     albert: "Albert",
     encomun: "Encomun",
@@ -505,6 +518,7 @@
         syncPoisFromNavigation(loader.getMeta()?.poiCatalog || [], { injectAllFloors: true });
         rebuildL00PoiIndex();
         injectHiddenRoutePois();
+        injectHiddenSearchPois();
       } catch (err) {
         console.error("ensureNavGraphFloors:", err);
         state.navGraphError = String(err.message || err);
@@ -797,6 +811,7 @@
   function poiSuggestTitle(poi) {
     if (!poi) return "";
     if (poi.id === "__here__") return poi.searchLabel || poi.name || "Estou aqui";
+    if (poi.startKidsGuide) return poi.searchLabel || poi.name;
     const name = poi.name || "Local";
     const lvl = poiDisplayLevel(poi);
     if (!lvl || lvl === "L00") return name;
@@ -846,6 +861,7 @@
   /** Linha secundária da lista: só o código do andar. */
   function poiSuggestMeta(poi) {
     if (!poi) return "";
+    if (poi.startKidsMeta) return poi.startKidsMeta;
     const lvl = poiDisplayLevel(poi);
     const tag = formatFloorTag(lvl);
     if (poi.accessNote) return `${tag} · acesso pelo ${formatFloorTag("L00")}`;
@@ -1100,6 +1116,71 @@
     return (CONFIG.narniaGateIcons || {})[levelId] || null;
   }
 
+  function encomunHubNode(levelId) {
+    return CONFIG.encomunTransfer?.[levelId]?.nodeId || null;
+  }
+
+  function encomunGateIcon(levelId) {
+    const cfg = CONFIG.encomunTransfer?.[levelId];
+    if (!cfg) return null;
+    if (cfg.gateIcon) return { ...cfg.gateIcon, nodeId: cfg.nodeId };
+    const n = cfg.nodeId && state.navGraph?.nodesById?.get(cfg.nodeId);
+    return n ? { x: n.x, y: n.y, nodeId: cfg.nodeId } : null;
+  }
+
+  function isBasementEncomunTrip(oLvl, dLvl) {
+    return (oLvl === "B01" && dLvl === "B02") || (oLvl === "B02" && dLvl === "B01");
+  }
+
+  function isBasementEncomunExitLeg(levelId, oLvl, dLvl) {
+    return isBasementEncomunTrip(oLvl, dLvl) && levelId === oLvl;
+  }
+
+  function isBasementEncomunEntryLeg(levelId, oLvl, dLvl) {
+    return isBasementEncomunTrip(oLvl, dLvl) && levelId === dLvl;
+  }
+
+  function isBasementEncomunExitActiveLeg(levelId, oLvl, dLvl) {
+    return isBasementEncomunExitLeg(levelId, oLvl, dLvl);
+  }
+
+  /** Waypoints obrigatórios B1 ↔ B2 pelo Encomun (não pela escada de Nárnia). */
+  function encomunBasementWaypoints(fromLvl, toLvl) {
+    const cfg = CONFIG.encomunTransfer || {};
+    const b01En = cfg.B01?.nodeId;
+    const b01Bridge = cfg.b01BridgeNode;
+    const b02En = cfg.B02?.nodeId;
+    const b02Bridge = cfg.b02BridgeNode;
+    if (fromLvl === "B01" && toLvl === "B02" && b01En && b01Bridge && b02En) {
+      return [b01En, b01Bridge, b02Bridge, b02En].filter(Boolean);
+    }
+    if (fromLvl === "B02" && toLvl === "B01" && b02En && b02Bridge && b01Bridge && b01En) {
+      return [b02En, b02Bridge, b01Bridge, b01En].filter(Boolean);
+    }
+    return [];
+  }
+
+  /** Malha + corredor do Espaço Servir quando a origem é B2. */
+  function basementTripWaypoints(oLvl, dLvl, dest) {
+    if (isBasementEncomunTrip(oLvl, dLvl)) {
+      return encomunBasementWaypoints(oLvl, dLvl);
+    }
+    let via = narniaHubWaypoints(oLvl, dLvl);
+    if (oLvl === "B02" && !isBasementFloor(dLvl) && poiRawKey(dest) === "P020_espaco_servir") {
+      via = mergeWaypointIds(via, CONFIG.basementServirL00Via || []);
+    }
+    return via;
+  }
+
+  function narniaForbiddenEdgeSetForTrip(oLvl, dLvl) {
+    const blocked = narniaForbiddenEdgeSet();
+    if (isBasementEncomunTrip(oLvl, dLvl)) {
+      const allow = CONFIG.encomunTransfer?.verticalEdgeId || "B01_B02_E_batisterio";
+      blocked.delete(allow);
+    }
+    return blocked;
+  }
+
   function isNarniaEntrancePoi(poi) {
     if (!poi) return false;
     const raw = norm(poi.rawId || poi.id || "");
@@ -1131,7 +1212,70 @@
     return poi;
   }
 
-  /** Ajusta o fim/início da polyline ao lampião — sem criar diagonal longa fora do grafo. */
+  /** Quebra um segmento diagonal em L (horizontal + vertical), evitando paredes. */
+  function appendOrthogonalSegment(a, b, levelId) {
+    const dx = Math.abs(a.x - b.x);
+    const dy = Math.abs(a.y - b.y);
+    if (dx <= 2.5 || dy <= 2.5) return [a, b];
+    const midA = { x: a.x, y: b.y };
+    const midB = { x: b.x, y: a.y };
+    const crossA = crossesWall(a, midA, levelId) || crossesWall(midA, b, levelId);
+    const crossB = crossesWall(a, midB, levelId) || crossesWall(midB, b, levelId);
+    let mid = midA;
+    if (!crossA && crossB) mid = midA;
+    else if (crossA && !crossB) mid = midB;
+    else if (!crossA && !crossB) mid = dx >= dy ? midB : midA;
+    else mid = dx >= dy ? midB : midA;
+    return [a, mid, b];
+  }
+
+  /** Converte diagonais longas da polyline em trechos ortogonais (sem atravessar paredes). */
+  function orthogonalizeRoutePolyline(points, levelId, eps = 3, minLen = 12) {
+    const pts = (points || []).map((p) => ({ x: p.x, y: p.y }));
+    if (pts.length < 2) return pts;
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const a = out[out.length - 1];
+      const b = pts[i];
+      const dx = Math.abs(a.x - b.x);
+      const dy = Math.abs(a.y - b.y);
+      if (dx > eps && dy > eps && dist(a, b) >= minLen) {
+        const segs = appendOrthogonalSegment(a, b, levelId);
+        for (let j = 1; j < segs.length; j++) {
+          const p = segs[j];
+          const last = out[out.length - 1];
+          if (!last || dist(last, p) > 0.05) out.push(p);
+        }
+      } else {
+        const last = out[out.length - 1];
+        if (!last || dist(last, b) > 0.05) out.push(b);
+      }
+    }
+    return out.length >= 2 ? out : pts;
+  }
+
+  /** Spur curto ortogonal até o alvo (ex.: lampião da Porta de Nárnia). */
+  function appendOrthogonalEndpoint(points, target, levelId, which) {
+    const out = (points || []).map((p) => ({ x: p.x, y: p.y }));
+    if (!out.length || !target) return out;
+    const idx = which === "start" ? 0 : out.length - 1;
+    const tip = out[idx];
+    const t = { x: target.x, y: target.y };
+    if (dist(tip, t) <= 0.8) {
+      out[idx] = t;
+      return out;
+    }
+    const segs = appendOrthogonalSegment(tip, t, levelId);
+    if (which === "start") {
+      out.splice(0, 1, ...segs);
+    } else {
+      out.pop();
+      out.push(...segs.slice(1));
+    }
+    return out;
+  }
+
+  /** Ajusta o fim/início da polyline ao nó oficial — nunca diagonal longa até o lampião. */
   function refineNarniaEndpoint(pts, levelId, which) {
     const gate = narniaGateIcon(levelId);
     const hub = narniaHubNode(levelId);
@@ -1144,9 +1288,31 @@
     const tip = out[idx];
     const nearHub = dist(tip, hubPt) <= 48 || dist(tip, g) <= 48;
     if (!nearHub) return out;
-    if (dist(tip, g) <= 1.5) return out;
-    if (dist(tip, g) > 28 && crossesWall(tip, g, levelId)) return out;
-    out[idx] = g;
+
+    if (dist(tip, hubPt) <= 1.5) {
+      if (which === "end" && dist(tip, g) > 0.8 && dist(tip, g) <= 14) {
+        return appendOrthogonalEndpoint(out, g, levelId, "end");
+      }
+      if (which === "start" && dist(tip, g) > 0.8 && dist(tip, g) <= 14) {
+        return appendOrthogonalEndpoint(out, g, levelId, "start");
+      }
+      return out;
+    }
+
+    if (dist(tip, hubPt) <= 55) {
+      if (which === "end") {
+        out.push(...appendOrthogonalSegment(tip, hubPt, levelId).slice(1));
+        if (dist(out[out.length - 1], g) > 0.8 && dist(out[out.length - 1], g) <= 14) {
+          return appendOrthogonalEndpoint(out, g, levelId, "end");
+        }
+      } else {
+        const segs = appendOrthogonalSegment(tip, hubPt, levelId);
+        out.splice(0, 1, ...segs);
+        if (dist(out[0], g) > 0.8 && dist(out[0], g) <= 14) {
+          return appendOrthogonalEndpoint(out, g, levelId, "start");
+        }
+      }
+    }
     return out;
   }
 
@@ -1235,6 +1401,49 @@
     return dist(tip, hub) > 55;
   }
 
+  function poiAnchorsVerticalHub(poi, levelId, route = state.route) {
+    const hubId = verticalHubNodeForLevel(levelId, route);
+    if (!hubId || !poi) return false;
+    return resolveNavNodeIds(poi, "origin").includes(hubId);
+  }
+
+  /** Trecho mínimo visível no hub vertical quando origem/destino já está no elevador/escada. */
+  function verticalHubSpurPoints(levelId, route = state.route) {
+    const hubId = verticalHubNodeForLevel(levelId, route);
+    const n = hubId && state.navGraph?.nodesById?.get(hubId);
+    if (!n) return null;
+    const hubPt = { x: n.x, y: n.y };
+
+    const NR = globalThis.NavigationRouter;
+    if (NR?.astar && state.navGraph && hubId) {
+      const neighbors = (state.navGraph.adjacency?.get(hubId) || [])
+        .map((e) => (e.from === hubId ? e.to : e.from))
+        .filter((id) => state.navGraph.nodesById.get(id)?.level === levelId);
+      let best = null;
+      for (const nid of neighbors) {
+        const leg = NR.astar(hubId, [nid], state.navGraph, { avoidParking: false });
+        if (leg?.points?.length >= 2) {
+          const pts = leg.points.map((p) => ({ x: p.x, y: p.y }));
+          const span = dist(pts[0], pts[pts.length - 1]);
+          if (span >= 8 && (!best || span > best.span)) {
+            best = { points: pts, nodeIds: leg.nodeIds || [hubId, nid], edgeIds: leg.edgeIds || [], span };
+          }
+        }
+      }
+      if (best) return best;
+    }
+
+    const icon = verticalHubIconPoint(levelId, route);
+    const tip = icon && dist(hubPt, icon) > 8
+      ? { x: icon.x, y: icon.y }
+      : { x: hubPt.x - 18, y: hubPt.y + 10 };
+    return {
+      points: [hubPt, tip],
+      nodeIds: [hubId],
+      edgeIds: [],
+    };
+  }
+
   /** Prolonga o trecho de saída L00 até o ícone do elevador ou das escadas laterais. */
   function appendVerticalHubExitLeg(pts, levelId, route = state.route) {
     const hub = verticalHubIconPoint(levelId, route);
@@ -1244,6 +1453,19 @@
     const tip = out[out.length - 1];
     if (dist(tip, hubPt) <= 0.8) return out;
 
+    const NR = globalThis.NavigationRouter;
+    if (NR?.astar && state.navGraph && hub.nodeId) {
+      const startId = NR.nearestNodeId(tip, state.navGraph, { level: levelId })
+        || (out.length >= 2 ? NR.nearestNodeId(out[out.length - 2], state.navGraph, { level: levelId }) : null);
+      if (startId && startId !== hub.nodeId) {
+        const mesh = NR.astar(startId, [hub.nodeId], state.navGraph, { avoidParking: false });
+        if (mesh?.points?.length >= 2) {
+          out = out.concat(mesh.points.slice(1).map((p) => ({ x: p.x, y: p.y })));
+          return out;
+        }
+      }
+    }
+
     const spurMax = Math.max(tol("spurTol", 48), 120);
     const mid = { x: hubPt.x, y: tip.y };
     if (dist(tip, mid) > 0.8 && dist(tip, mid) <= spurMax && !crossesWall(tip, mid, levelId)) {
@@ -1252,16 +1474,6 @@
     const tip2 = out[out.length - 1];
     if (dist(tip2, hubPt) > 0.8 && dist(tip2, hubPt) <= spurMax && !crossesWall(tip2, hubPt, levelId)) {
       out.push(hubPt);
-      return out;
-    }
-
-    const NR = globalThis.NavigationRouter;
-    if (!NR?.astar || !state.navGraph || !hub.nodeId) return out;
-    const startId = NR.nearestNodeId(tip2, state.navGraph, { level: levelId });
-    if (!startId || startId === hub.nodeId) return out;
-    const mesh = NR.astar(startId, [hub.nodeId], state.navGraph, { avoidParking: false });
-    if (mesh?.points?.length >= 2) {
-      out = out.concat(mesh.points.slice(1).map((p) => ({ x: p.x, y: p.y })));
     }
     return out;
   }
@@ -1286,18 +1498,40 @@
     return appendVerticalHubExitLeg(points, levelId, route);
   }
 
-  /** Trecho de saída do subsolo: só ajusta o fim ao lampião da Porta de Nárnia (sem spur da origem). */
+  /** Trecho de saída do subsolo: completa malha até o nó Nárnia e spur ortogonal ao lampião. */
   function finalizeBasementExitLegPoints(pts, levelId) {
     let out = (pts || []).map((p) => ({ x: p.x, y: p.y }));
     if (out.length < 2) return out;
-    out = refineNarniaEndpoint(out, levelId, "end");
-    const gate = narniaGateIcon(levelId);
-    if (gate && out.length >= 1) {
+
+    const hub = narniaHubNode(levelId);
+    const hubNode = hub && state.navGraph?.nodesById?.get(hub);
+    const hubPt = hubNode ? { x: hubNode.x, y: hubNode.y } : null;
+
+    if (hub && state.route?.nodeIds?.includes(hub)) {
+      const tailed = appendRouteMeshTail(out, state.route, hub, levelId);
+      if (tailed?.length >= 2) out = tailed;
+    }
+
+    if (hubPt) {
       const tip = out[out.length - 1];
-      const g = { x: gate.x, y: gate.y };
-      if (dist(tip, g) > 1.5 && dist(tip, g) <= 55 && !crossesWall(tip, g, levelId)) {
-        out[out.length - 1] = g;
+      if (dist(tip, hubPt) > 1.5 && dist(tip, hubPt) <= 55) {
+        out.push(...appendOrthogonalSegment(tip, hubPt, levelId).slice(1));
+      } else if (dist(tip, hubPt) <= 1.5) {
+        out[out.length - 1] = hubPt;
       }
+    }
+
+    out = refineNarniaEndpoint(out, levelId, "end");
+    return orthogonalizeRoutePolyline(out, levelId);
+  }
+
+  /** Trecho B1 → B2: fim no acesso Encomun (linha azul no mapa B1). */
+  function finalizeEncomunExitLegPoints(pts, levelId) {
+    let out = (pts || []).map((p) => ({ x: p.x, y: p.y }));
+    if (out.length < 2) return out;
+    const gate = encomunGateIcon(levelId);
+    if (gate && out.length >= 1) {
+      out[out.length - 1] = { x: gate.x, y: gate.y };
     }
     return out;
   }
@@ -1306,13 +1540,33 @@
     return isBasementFloor(oLvl) && !isBasementFloor(dLvl) && basementExitLegEnd(levelId, oLvl, dLvl);
   }
 
+  /** Trecho no Térreo ao descer para B1/B2 — termina na Porta de Nárnia (área laranja). */
+  function isBasementEntryActiveLeg(levelId, oLvl, dLvl) {
+    return levelId === "L00" && !isBasementFloor(oLvl) && isBasementFloor(dLvl);
+  }
+
+  function basementExitLegIncomplete(points, levelId, oLvl, dLvl) {
+    if (isBasementEncomunExitLeg(levelId, oLvl, dLvl)) {
+      const gate = encomunGateIcon(levelId);
+      if (!gate || !points?.length) return true;
+      return dist(points[points.length - 1], gate) > 55;
+    }
+    if (isBasementExitActiveLeg(levelId, oLvl, dLvl) || isBasementEntryActiveLeg(levelId, oLvl, dLvl)) {
+      const gateLvl = isBasementFloor(levelId) ? levelId : "L00";
+      const gate = narniaGateIcon(gateLvl);
+      if (!gate || !points?.length) return true;
+      return dist(points[points.length - 1], gate) > 55;
+    }
+    return false;
+  }
+
   /** Reconstrói polyline do trecho no andar quando legs/points falham (lazy load, etc.). */
   function buildFloorLegFallbackPoints(levelId, origin, dest) {
     const NR = globalThis.NavigationRouter;
     if (!NR || !state.navGraph || !origin || !dest) return null;
     const oLvl = poiLevel(origin);
     const dLvl = poiLevel(dest);
-    const opts = { blockedEdges: narniaForbiddenEdgeSet() };
+    const opts = { blockedEdges: narniaForbiddenEdgeSetForTrip(oLvl, dLvl) };
 
     const astarLeg = (startId, endId) => {
       if (!startId || !endId || !state.navGraph.nodesById.has(startId) || !state.navGraph.nodesById.has(endId)) {
@@ -1351,12 +1605,40 @@
       return { points: outPts, edgeIds: outEdges, nodeIds: outNodes };
     };
 
+    if (isBasementEncomunExitLeg(levelId, oLvl, dLvl)) {
+      const hub = encomunHubNode(levelId);
+      const startIds = resolveNavNodeIds(origin, "origin");
+      const mesh = hub && startIds[0] ? astarLeg(startIds[0], hub) : null;
+      if (mesh?.points?.length >= 2) {
+        return { ...mesh, points: finalizeEncomunExitLegPoints(mesh.points, levelId) };
+      }
+    }
+
+    if (isBasementEncomunEntryLeg(levelId, oLvl, dLvl)) {
+      const startIds = [encomunHubNode(levelId)].filter(Boolean);
+      const endIds = resolveNavNodeIds(dest, "dest");
+      for (const startId of startIds) {
+        if (!startId || !endIds[0]) continue;
+        const mesh = astarLeg(startId, endIds[0]);
+        if (mesh?.points?.length >= 2) return mesh;
+      }
+    }
+
     if (isBasementExitActiveLeg(levelId, oLvl, dLvl)) {
       const hub = narniaHubNode(levelId);
       const startIds = resolveNavNodeIds(origin, "origin");
       const mesh = hub && startIds[0] ? astarLeg(startIds[0], hub) : null;
       if (mesh?.points?.length >= 2) {
         return { ...mesh, points: finalizeBasementExitLegPoints(mesh.points, levelId) };
+      }
+    }
+
+    if (isBasementEntryActiveLeg(levelId, oLvl, dLvl)) {
+      const hub = narniaHubNode("L00");
+      const startIds = resolveNavNodeIds(origin, "origin");
+      const mesh = hub && startIds[0] ? astarLeg(startIds[0], hub) : null;
+      if (mesh?.points?.length >= 2) {
+        return { ...mesh, points: finalizeBasementExitLegPoints(mesh.points, "L00") };
       }
     }
 
@@ -1371,7 +1653,12 @@
       const hub = narniaHubNode("L00");
       if (isBasementFloor(oLvl) && !isBasementFloor(dLvl) && hub) {
         const endIds = resolveNavNodeIds(dest, "dest");
-        const mesh = endIds[0] ? astarLeg(hub, endIds[0]) : null;
+        let mesh = null;
+        if (oLvl === "B02" && poiRawKey(dest) === "P020_espaco_servir") {
+          const via = CONFIG.basementServirL00Via || [];
+          if (via.length && endIds[0]) mesh = astarThrough([hub, ...via, endIds[0]]);
+        }
+        if (!mesh?.points?.length && endIds[0]) mesh = astarLeg(hub, endIds[0]);
         if (mesh?.points?.length >= 2) {
           return { ...mesh, points: refineNarniaEndpoint(mesh.points, "L00", "start") };
         }
@@ -1380,7 +1667,7 @@
         const startIds = resolveNavNodeIds(origin, "origin");
         const mesh = startIds[0] ? astarLeg(startIds[0], hub) : null;
         if (mesh?.points?.length >= 2) {
-          return { ...mesh, points: refineNarniaEndpoint(mesh.points, "L00", "end") };
+          return { ...mesh, points: finalizeBasementExitLegPoints(mesh.points, "L00") };
         }
       }
     }
@@ -1395,6 +1682,9 @@
       const hubId = verticalHubNodeForLevel(levelId, state.route);
       const startIds = resolveNavNodeIds(origin, "origin");
       if (!hubId || !startIds[0]) return null;
+      if (startIds.includes(hubId)) {
+        return verticalHubSpurPoints(levelId, state.route);
+      }
       let mesh = null;
       if (levelId === "L00" && oLvl === "L00" && isAdmFloor(dLvl)) {
         const via = l00InteriorApproachWaypoints();
@@ -1407,20 +1697,15 @@
     if (crossFloorEntryLeg(levelId, oLvl, dLvl)) {
       const hubId = verticalHubNodeForLevel(levelId, state.route);
       const endIds = resolveNavNodeIds(dest, "dest");
+      if (hubId && endIds.includes(hubId)) {
+        return verticalHubSpurPoints(levelId, state.route);
+      }
       const mesh = hubId && endIds[0] ? astarLeg(hubId, endIds[0]) : null;
       if (mesh?.points?.length >= 2) return mesh;
     }
 
     if (crossFloorTransitLeg(levelId, oLvl, dLvl)) {
-      const hubId = verticalHubNodeForLevel(levelId, state.route);
-      const n = hubId && state.navGraph?.nodesById?.get(hubId);
-      if (n) {
-        return {
-          points: [{ x: n.x, y: n.y }, { x: n.x + 0.8, y: n.y + 0.4 }],
-          nodeIds: [hubId],
-          edgeIds: [],
-        };
-      }
+      return verticalHubSpurPoints(levelId, state.route);
     }
 
     return null;
@@ -1607,6 +1892,7 @@
     if (out.length < 2) return out;
 
     if (crossFloorExitLeg(levelId, oLvl, dLvl)) {
+      if (poiAnchorsVerticalHub(state.origin, levelId, route)) return out;
       out = refineVerticalHubEndpoint(out, levelId, route, "end");
       out = appendVerticalHubExitLeg(out, levelId, route);
       if (!poiUsesOfficialRouteAnchor(state.origin)) {
@@ -1620,6 +1906,7 @@
     }
 
     if (crossFloorEntryLeg(levelId, oLvl, dLvl)) {
+      if (poiAnchorsVerticalHub(state.dest, levelId, route)) return out;
       out = refineVerticalHubEndpoint(out, levelId, route, "start");
       if (!poiUsesOfficialRouteAnchor(state.dest)) {
         const d = poiIcon(state.dest);
@@ -1702,22 +1989,25 @@
       .map((p) => ({ x: p.x, y: p.y }))
       .filter((p) => isFinite(p.x) && isFinite(p.y));
 
-    if (points.length < 2) {
-      const sliced = sliceRoutePointsForLevel(route, levelId);
-      if (sliced?.length >= 2) points = sliced;
-    }
-
-    if (points.length < 2 && leg?.edgeIds?.length >= 1) {
+    if (leg?.edgeIds?.length >= 1) {
       const mesh = buildMeshPaintPoints(leg.edgeIds, leg.nodeIds);
-      if (mesh) {
+      if (mesh?.length >= 2) {
         points = mesh;
         leg.points = mesh.map((p) => ({ x: p.x, y: p.y }));
       }
     }
 
+    if (points.length < 2) {
+      const sliced = sliceRoutePointsForLevel(route, levelId);
+      if (sliced?.length >= 2) points = sliced;
+    }
+
     const oLvl = poiLevel(state.origin);
     const dLvl = poiLevel(state.dest);
-    if (points.length < 2 && oLvl !== dLvl && (levelId === oLvl || levelId === dLvl)) {
+    if (
+      basementExitLegIncomplete(points, levelId, oLvl, dLvl)
+      || (points.length < 2 && oLvl !== dLvl && (levelId === oLvl || levelId === dLvl))
+    ) {
       const fb = buildFloorLegFallbackPoints(levelId, state.origin, state.dest);
       if (fb?.points?.length >= 2) {
         points = fb.points.map((p) => ({ x: p.x, y: p.y }));
@@ -1835,8 +2125,16 @@
 
   function patchBasementLegPoints(route) {
     if (!route?.legs?.length || !state.origin || !state.dest) return;
+    const oLvl = poiLevel(state.origin);
+    const dLvl = poiLevel(state.dest);
     for (const leg of route.legs) {
-      if ((leg.points?.length || 0) >= 2 && (leg.edgeIds?.length || 0) >= 1) continue;
+      if ((leg.points?.length || 0) >= 2 && (leg.edgeIds?.length || 0) >= 1) {
+        const mesh = buildMeshPaintPoints(leg.edgeIds, leg.nodeIds);
+        if (mesh?.length >= 2) {
+          leg.points = mesh.map((p) => ({ x: p.x, y: p.y }));
+        }
+        continue;
+      }
       const fb = buildFloorLegFallbackPoints(leg.level, state.origin, state.dest);
       if (!fb?.points?.length || fb.points.length < 2) continue;
       if (isSyntheticStraightSpur(fb.points, fb, route)) continue;
@@ -1858,14 +2156,14 @@
     return out;
   }
 
-  /** Cadeia obrigatória pela entrada de Nárnia (T → B01 → B02). */
+  /** Cadeia obrigatória pela entrada de Nárnia (T → B01 → B02). B1↔B2 usa Encomun (ver encomunBasementWaypoints). */
   function narniaBasementChain(fromLvl, toLvl) {
     const L00 = narniaHubNode("L00");
     const B01 = narniaHubNode("B01");
     const B02 = narniaHubNode("B02");
     if (!L00 || !B01 || !B02) return [];
-    if (fromLvl === "B01" && toLvl === "B02") return [B01, B02];
-    if (fromLvl === "B02" && toLvl === "B01") return [B02, B01];
+    if (fromLvl === "B01" && toLvl === "B02") return [];
+    if (fromLvl === "B02" && toLvl === "B01") return [];
     if (fromLvl === "B01" && toLvl === "L00") return [B01, L00];
     if (fromLvl === "L00" && toLvl === "B01") return [L00, B01];
     if (fromLvl === "B02" && toLvl === "L00") return [B02, B01, L00];
@@ -1913,26 +2211,29 @@
     return blocked;
   }
 
-  /** Rotas B01/B02: único corredor vertical pela entrada de Nárnia no mapa T. */
+  /** Rotas B01/B02: Nárnia no T ou Encomun entre B1 e B2. */
   function buildBasementNarniaRoutes(NR, startIds, endIds, origin, dest) {
     const oLvl = poiLevel(origin);
     const dLvl = poiLevel(dest);
     if (!routeInvolvesBasementTransfer(oLvl, dLvl)) return [];
 
-    const via = narniaHubWaypoints(oLvl, dLvl).filter((id) => state.navGraph?.nodesById?.has(id));
+    const via = basementTripWaypoints(oLvl, dLvl, dest).filter((id) => state.navGraph?.nodesById?.has(id));
     if (via.length < 2) return [];
+
+    const encomun = isBasementEncomunTrip(oLvl, dLvl);
+    const label = encomun ? "Pelo Encomun" : "Pela entrada de Nárnia";
 
     const route = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, {
       via,
-      label: "Pela entrada de Nárnia",
+      label,
       avoidParking: false,
       allowParking: true,
-      blockedEdges: narniaForbiddenEdgeSet(),
+      blockedEdges: narniaForbiddenEdgeSetForTrip(oLvl, dLvl),
     });
     if (!route) return [];
 
-    route.kind = "narnia";
-    route.label = "Pela entrada de Nárnia";
+    route.kind = encomun ? "encomun" : "narnia";
+    route.label = label;
     route.namedExternal = true;
     return [route];
   }
@@ -2019,17 +2320,17 @@
   }
 
   function routeViaLabel(route, oLvl, dLvl) {
+    if (isBasementEncomunTrip(oLvl, dLvl)) return "via Encomun";
     if (routeInvolvesBasementTransfer(oLvl, dLvl)) return "via Porta de Nárnia";
     if (routeUsesLateralStairs(route)) return "via escada lateral";
     return "via elevador";
   }
 
-  /** Andar exibido ao traçar rota — subsolo→Térreo abre no mapa T (trecho após Nárnia). */
+  /** Andar exibido ao traçar rota — subsolo→campus abre no mapa do subsolo de origem. */
   function routeInitialViewLevel(route, oLvl, dLvl) {
     if (oLvl === dLvl) return oLvl;
 
     if (routeInvolvesBasementTransfer(oLvl, dLvl)) {
-      if (isBasementFloor(oLvl) && dLvl === "L00") return "L00";
       if (isBasementFloor(oLvl)) return oLvl;
       if (isAdmFloor(oLvl)) return oLvl;
       return "L00";
@@ -2117,13 +2418,35 @@
     return false;
   }
 
-  /** Passos explícitos pela Porta de Nárnia entre Térreo, B01 e B02. */
+  /** Passos explícitos pela Porta de Nárnia ou Encomun entre Térreo, B01 e B02. */
   function buildBasementNarniaSteps(oLvl, dLvl) {
     const steps = [];
     steps.push({ ico: "P", txt: `Início: ${state.origin.name}`, dist: "" });
 
+    if (isBasementEncomunTrip(oLvl, dLvl)) {
+      const enLabel = CONFIG.encomunTransfer?.[oLvl]?.label || "Encomun";
+      steps.push({
+        ico: "W",
+        txt: `Dirija-se ao ${enLabel} — ligação entre ${narniaFloorLabel(oLvl)} e ${narniaFloorLabel(dLvl)}`,
+        dist: "",
+      });
+      steps.push({
+        ico: "W",
+        txt: `Use o ${enLabel} para chegar ao ${narniaFloorLabel(dLvl)}`,
+        dist: "",
+      });
+      steps.push({
+        ico: "W",
+        txt: `Siga até ${state.dest.name}`,
+        dist: "",
+      });
+      steps.push({ ico: "F", txt: `Chegada: ${state.dest.name}`, dist: "" });
+      return steps;
+    }
+
     const origBasement = isBasementFloor(oLvl);
     const destBasement = isBasementFloor(dLvl);
+    const servirTrip = oLvl === "B02" && poiRawKey(state.dest) === "P020_espaco_servir";
 
     if (isAdmFloor(oLvl) && routeInvolvesBasementTransfer(oLvl, dLvl)) {
       const hub = elevatorHub(oLvl);
@@ -2150,9 +2473,16 @@
     if (origBasement) {
       steps.push({
         ico: "W",
-        txt: `Dirija-se à ${narniaGateLabel(oLvl)} — ponto de saída do ${narniaFloorLabel(oLvl)}`,
+        txt: `Dirija-se à ${narniaGateLabel(oLvl)} — saída do ${narniaFloorLabel(oLvl)}`,
         dist: "",
       });
+      if (oLvl === "B02" && !destBasement) {
+        steps.push({
+          ico: "W",
+          txt: "Suba pela Porta de Nárnia até o Térreo",
+          dist: "",
+        });
+      }
     }
 
     for (let i = 0; i < chain.length - 1; i++) {
@@ -2187,11 +2517,19 @@
         dist: "",
       });
     } else if (dLvl === "L00") {
-      steps.push({
-        ico: "W",
-        txt: `Siga até ${state.dest.name}`,
-        dist: "",
-      });
+      if (servirTrip) {
+        steps.push({
+          ico: "W",
+          txt: "No Térreo, siga pelo corredor oeste até o Espaço Servir",
+          dist: "",
+        });
+      } else {
+        steps.push({
+          ico: "W",
+          txt: `Siga até ${state.dest.name}`,
+          dist: "",
+        });
+      }
     }
 
     steps.push({ ico: "F", txt: `Chegada: ${state.dest.name}`, dist: "" });
@@ -2285,6 +2623,49 @@
         isTempleEntrance: true,
         iconHidden: true,
         routeOnly: true,
+        active: true,
+      });
+      applyInjectedPoiIcon(poi);
+      G.pois.push(poi);
+    }
+    G.pois.sort((a, b) => (a.searchLabel || a.name).localeCompare(b.searchLabel || b.name, "pt-BR"));
+  }
+
+  /** POIs ocultos pesquisáveis — sem ícone no mapa, rota na malha oficial. */
+  function injectHiddenSearchPois() {
+    const specs = CONFIG.hiddenSearchPois || [];
+    const specKeys = new Set(specs.map((s) => poiRawKey({ rawId: s.rawId })).filter(Boolean));
+    if (specKeys.size) {
+      G.pois = (G.pois || []).filter((p) => !specKeys.has(poiRawKey(p)));
+    }
+    for (const spec of specs) {
+      if (!spec?.rawId) continue;
+      const key = poiRawKey({ rawId: spec.rawId });
+      if ((G.pois || []).some((p) => poiRawKey(p) === key)) continue;
+      const resolved = resolveGraphNodeId(spec.anchor) || spec.anchor;
+      const node = state.navGraph?.nodesById?.get(resolved) || G.nodes?.[resolved];
+      if (!node) continue;
+      const icon = spec.iconCampus || { x: node.x, y: node.y };
+      const poi = enrichPoiMeta({
+        id: spec.rawId,
+        rawId: spec.rawId,
+        name: spec.name || "Bebedouro",
+        searchLabel: spec.searchLabel || spec.name || "Bebedouro",
+        x: icon.x,
+        y: icon.y,
+        iconX: icon.x,
+        iconY: icon.y,
+        level: spec.level || node.level || "L00",
+        mapLevel: spec.level || "L00",
+        cat: spec.cat || "apoio",
+        group: "apoio",
+        building: "Templo",
+        navNodeIds: [resolved],
+        anchor: resolved,
+        snap: { x: node.x, y: node.y },
+        graphNodeId: resolved,
+        iconHidden: true,
+        hiddenOnMap: true,
         active: true,
       });
       applyInjectedPoiIcon(poi);
@@ -2460,14 +2841,34 @@
   }
 
   /** Planta ADM (L01–L07): coordenada local → campus (viewBox do mapa de andar). */
+  const ADM_FLOOR_TX = { tx: 37.53, ty: 401.3, scale: 1.57 };
+
   function localAdmToCampus(local) {
-    const TX = 37.53;
-    const TY = 401.3;
-    const SCALE = 1.57;
+    const { tx, ty, scale } = ADM_FLOOR_TX;
     return {
-      x: +(TX + local.x * SCALE).toFixed(3),
-      y: +(TY + local.y * SCALE).toFixed(3),
+      x: +(tx + local.x * scale).toFixed(3),
+      y: +(ty + local.y * scale).toFixed(3),
     };
+  }
+
+  /** Campus → coordenada local do SVG do andar ADM (inverso de localAdmToCampus). */
+  function campusAdmToLocal(campus) {
+    const { tx, ty, scale } = ADM_FLOOR_TX;
+    return {
+      x: +((campus.x - tx) / scale).toFixed(3),
+      y: +((campus.y - ty) / scale).toFixed(3),
+    };
+  }
+
+  /** Mapas L01–L06 usam viewBox local; malha de navegação fica em campus. */
+  function usesAdmLocalViewCoords(levelId) {
+    return isAdmFloor(levelId);
+  }
+
+  /** Mapas L01–L06: paredes no SVG estão em coords locais (dentro do grupo transformado). */
+  function navPointToWallSpace(p, levelId) {
+    if (!p || !isFinite(p.x) || !isFinite(p.y)) return p;
+    return usesAdmLocalViewCoords(levelId) ? campusAdmToLocal(p) : { x: p.x, y: p.y };
   }
 
   /** POI edge / ícone oficial no campus (inclui layers L00_poi_* → P020). */
@@ -2729,6 +3130,154 @@
     return [buildGenericTemplePoi()];
   }
 
+  function isStartKidsSearchQuery(query) {
+    const q = normSearch(String(query || "").trim());
+    if (!q) return false;
+    const triggers = CONFIG.startKidsSearch?.triggers || ["start", "crianca"];
+    if (triggers.some((t) => {
+      const nt = normSearch(t);
+      if (!nt) return false;
+      return q === nt || q.includes(nt) || (q.length >= 3 && nt.startsWith(q));
+    })) return true;
+    // "salas" + "start" em qualquer ordem
+    if (/\bstart\b/.test(q) && /\bsala/.test(q)) return true;
+    return false;
+  }
+
+  function findPoiByRawId(rawId) {
+    if (!rawId) return null;
+    return (G.pois || []).find((p) => {
+      if (!isSearchablePoi(p)) return false;
+      const key = poiRawKey(p);
+      return key === rawId || p.rawId === rawId || String(p.id || "").includes(rawId);
+    }) || null;
+  }
+
+  function buildStartKidsTransitPoi(hub) {
+    if (!hub?.rawId) return null;
+    const transitMeta = "T · Hall do Templo — suba ou desça daqui";
+    const existing = findPoiByRawId(hub.rawId);
+    if (existing) {
+      return {
+        ...existing,
+        id: `startkids-hub-${hub.rawId}`,
+        searchLabel: hub.label,
+        name: hub.label,
+        startKidsGuide: true,
+        startKidsMeta: transitMeta,
+      };
+    }
+    const anchorId = CONFIG.poiAnchors?.[hub.rawId];
+    const icon = CONFIG.poiIconCampus?.[hub.rawId];
+    const node = anchorId && (state.navGraph?.nodesById?.get(anchorId) || G.nodes?.[anchorId]);
+    if (!anchorId && !icon) return null;
+    return {
+      id: `startkids-hub-${hub.rawId}`,
+      rawId: hub.rawId,
+      name: hub.label,
+      searchLabel: hub.label,
+      level: "L00",
+      mapLevel: "L00",
+      building: "Templo",
+      group: "elevadores",
+      cat: "acesso",
+      active: true,
+      anchor: anchorId || null,
+      navNodeIds: anchorId ? [anchorId] : [],
+      snap: node ? { x: node.x, y: node.y } : null,
+      x: icon?.x ?? node?.x,
+      y: icon?.y ?? node?.y,
+      iconX: icon?.x ?? node?.x,
+      iconY: icon?.y ?? node?.y,
+      startKidsGuide: true,
+      startKidsMeta: transitMeta,
+    };
+  }
+
+  function buildStartKidsAgeBandPoi(band) {
+    const floorTag = band.floorTag || formatFloorTag(band.level || band.mapLevel);
+    const meta = band.meta
+      || (band.floorTag === "CF" || band.destRawId === "P005_centro_de_formacao"
+        ? "CF · Centro de Formação"
+        : `${floorTag} · via elevador ou escadas laterais (T)`);
+    const existing = findPoiByRawId(band.destRawId);
+    if (existing) {
+      return {
+        ...existing,
+        id: band.id,
+        searchLabel: band.label,
+        name: band.label,
+        level: existing.level || band.level,
+        mapLevel: existing.mapLevel || existing.level || band.mapLevel || band.level,
+        startKidsGuide: true,
+        startKidsMeta: meta,
+      };
+    }
+    const anchorId = CONFIG.poiAnchors?.[band.destRawId];
+    const icon = CONFIG.poiIconCampus?.[band.destRawId];
+    const node = anchorId && (state.navGraph?.nodesById?.get(anchorId) || G.nodes?.[anchorId]);
+    return {
+      id: band.id,
+      rawId: band.destRawId,
+      name: band.label,
+      searchLabel: band.label,
+      level: band.level || "L00",
+      mapLevel: band.mapLevel || band.level || "L00",
+      building: "Start",
+      group: "salas",
+      cat: "ambiente",
+      active: true,
+      anchor: anchorId || null,
+      navNodeIds: anchorId ? [anchorId] : [],
+      snap: node ? { x: node.x, y: node.y } : null,
+      x: icon?.x ?? node?.x,
+      y: icon?.y ?? node?.y,
+      iconX: icon?.x ?? node?.x,
+      iconY: icon?.y ?? node?.y,
+      startKidsGuide: true,
+      startKidsMeta: meta,
+    };
+  }
+
+  function buildStartKidsSearchResults() {
+    const cfg = CONFIG.startKidsSearch || {};
+    return (cfg.ageBands || []).map(buildStartKidsAgeBandPoi);
+  }
+
+  function collapseStartKidsSearchResults(query) {
+    if (!isStartKidsSearchQuery(query)) return null;
+    return buildStartKidsSearchResults();
+  }
+
+  function isBebedouroSearchQuery(query) {
+    const q = normSearch(String(query || "").trim());
+    if (!q) return false;
+    return q === "bebedouro" || q === "bebedouduro" || q === "agua"
+      || q === "agua potavel" || q.includes("bebedouro") || q.includes("agua");
+  }
+
+  function collapseBebedouroSearchResults() {
+    const order = (CONFIG.hiddenSearchPois || []).map((s) => poiRawKey({ rawId: s.rawId }));
+    const items = (G.pois || []).filter((p) => {
+      if (!isSearchablePoi(p)) return false;
+      return order.includes(poiRawKey(p));
+    });
+    items.sort((a, b) => order.indexOf(poiRawKey(a)) - order.indexOf(poiRawKey(b)));
+    return items.length ? items : null;
+  }
+
+  function dedupeSearchPoiResults(items) {
+    const seen = new Set();
+    const out = [];
+    for (const p of items || []) {
+      const k = poiRawKey(p) || p.id;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(p);
+    }
+    return out;
+  }
+
   /** Após escolher rota do Templo, fixa destino/origem na entrada correspondente. */
   function syncTripPoiFromTempleRoute(route) {
     if (!route?.entranceId || route.kind !== "templo") return;
@@ -2850,17 +3399,165 @@
     const oLvl = poiLevel(origin);
     const dLvl = poiLevel(dest);
     if (isCfToJardimPair(origin, dest)) return 3;
+    if (isToCfPair(origin, dest)) return Math.max(2, MAX_ROUTE_OPTIONS);
+    if (isL00InteriorTerrainPair(origin, dest)) return Math.max(3, MAX_ROUTE_OPTIONS);
     if (oLvl === "L00" && isAdmFloor(dLvl)) return Math.max(2, MAX_ROUTE_OPTIONS);
     if (isAdmFloor(oLvl) && dLvl === "L00") return Math.max(2, MAX_ROUTE_OPTIONS);
     if (isCrossCampusFloorPair(oLvl, dLvl)) return 2;
     return DEFAULT_ROUTE_OPTIONS;
   }
 
-  /** Mínimo de opções para pares com rotas nomeadas (ex.: CF → Jardim). */
+  /** Mínimo de opções exibidas — sempre pelo menos 2 rotas para escolher. */
   function minRouteOptionsForPair(origin, dest) {
-    const max = maxRouteOptionsForPair(origin, dest);
-    const min = Math.max(2, CONFIG.minRouteOptions ?? 2);
-    return Math.min(max, min);
+    return Math.max(2, CONFIG.minRouteOptions ?? 2);
+  }
+
+  function effectiveMaxRouteOptionsForPair(origin, dest) {
+    return Math.max(minRouteOptionsForPair(origin, dest), maxRouteOptionsForPair(origin, dest));
+  }
+
+  function packSingleNavLegRoute(leg, origin, dest, kind = "alt") {
+    if (!leg?.points?.length) return null;
+    const points = appendPoiEndpoints(leg.points, origin, dest);
+    if (points.length < 2) return null;
+    const mpu = getMetersPerUnit();
+    const meshLen = (leg.points || []).reduce((s, p, i, a) => (i ? s + dist(a[i - 1], p) : 0), 0);
+    const spurExtra = Math.max(0, polylineLength(points) - meshLen);
+    return {
+      points,
+      nodeIds: leg.nodeIds,
+      edgeIds: leg.edgeIds,
+      length: (mpu > 0 ? leg.distanceMeters / mpu : meshLen) + spurExtra,
+      distanceMeters: (leg.distanceMeters || 0) + spurExtra * mpu,
+      kind,
+      fromJson: true,
+    };
+  }
+
+  function tryPushRouteOption(list, route, origin, dest, max) {
+    if (!route?.points || route.points.length < 2) return false;
+    if ((list || []).length >= max) return false;
+    if (list.some((r) => !r.syntheticAlternative && isDuplicateRoute(r, route))) return false;
+    if (!isRouteWallSafe(route, origin, dest)) return false;
+    list.push(route);
+    return true;
+  }
+
+  /** Busca alternativas reais (A*, zonas, bloqueio parcial) até atingir o mínimo. */
+  function appendRouteAlternativesUntilMin(list, NR, origin, dest, min, max) {
+    let out = (list || []).slice();
+    if (out.length >= min || !NR || !state.navGraph || !origin || !dest) return out;
+
+    const startIds = resolveTripNodeIds(origin, origin?.id === "__here__" ? "here" : "origin");
+    const endIds = resolveTripNodeIds(dest, "dest");
+    if (!startIds.length || !endIds.length) return out;
+
+    const searches = [
+      { preference: "shortest", avoidParking: false },
+      { preference: "shortest", avoidParking: true },
+      { preference: "shortest", avoidParking: true, preferZone: "indoor" },
+      { preference: "shortest", avoidParking: true, preferZone: "outdoor" },
+    ];
+
+    for (const searchOpts of searches) {
+      if (out.length >= min) break;
+      const found = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, {
+        ...searchOpts,
+        walkingSpeedMps: state.walkingSpeedMps || 1.2,
+      });
+      for (const leg of found) {
+        if (out.length >= min) break;
+        tryPushRouteOption(out, packSingleNavLegRoute(leg, origin, dest, "alt"), origin, dest, max);
+      }
+    }
+
+    if (out.length < min && out[0]?.edgeIds?.length) {
+      const blocked = new Set();
+      const edges = out[0].edgeIds;
+      const mid = Math.floor(edges.length / 2);
+      for (let i = Math.max(0, mid - 1); i <= Math.min(edges.length - 1, mid + 1); i++) {
+        if (edges[i]) blocked.add(edges[i]);
+      }
+      for (const startId of startIds) {
+        if (out.length >= min) break;
+        const leg = NR.astar(startId, endIds, state.navGraph, {
+          blockedEdges: blocked,
+          avoidParking: false,
+          walkingSpeedMps: state.walkingSpeedMps || 1.2,
+        });
+        tryPushRouteOption(out, packSingleNavLegRoute(leg, origin, dest, "alt"), origin, dest, max);
+      }
+    }
+
+    if (out.length < min) {
+      out = ensureCrossFloorRouteOptions(out, NR, origin, dest);
+    }
+    if (out.length < min) {
+      out = ensureJardimRouteOptions(out, NR, origin, dest);
+    }
+
+    return out.slice(0, max);
+  }
+
+  /** Último recurso: busca caminho distinto; só espelha se o grafo não tiver alternativa. */
+  function appendSyntheticRouteAlternatives(list, min, NR, origin, dest) {
+    const out = (list || []).slice();
+    const base = out[0];
+    if (!base || out.length >= min) return out;
+
+    if (NR && state.navGraph && origin && dest) {
+      const startIds = resolveTripNodeIds(origin, origin?.id === "__here__" ? "here" : "origin");
+      const endIds = resolveTripNodeIds(dest, "dest");
+      const blocked = new Set(base.edgeIds || []);
+      for (const startId of startIds) {
+        if (out.length >= min) break;
+        const leg = NR.astar(startId, endIds, state.navGraph, {
+          blockedEdges: blocked,
+          avoidParking: false,
+          walkingSpeedMps: state.walkingSpeedMps || 1.2,
+        });
+        const packed = packSingleNavLegRoute(leg, origin, dest, "alt");
+        if (packed) tryPushRouteOption(out, packed, origin, dest, MAX_ROUTE_OPTIONS);
+      }
+    }
+
+    while (out.length < min && base) {
+      const idx = out.length;
+      out.push({
+        ...base,
+        points: (base.points || []).map((p) => ({ x: p.x, y: p.y })),
+        nodeIds: base.nodeIds?.slice(),
+        edgeIds: base.edgeIds?.slice(),
+        rank: idx + 1,
+        kind: idx === 0 ? "best" : "alt",
+        label: idx === 0 ? base.label : `Rota ${idx + 1} — Alternativa`,
+        syntheticAlternative: idx > 0,
+      });
+    }
+    return out;
+  }
+
+  /** Garante no mínimo 2 opções distintas (ou espelhadas) antes de exibir ao usuário. */
+  function enforceMinimumRouteOptions(options, NR, origin, dest) {
+    const min = minRouteOptionsForPair(origin, dest);
+    const max = effectiveMaxRouteOptionsForPair(origin, dest);
+    let list = (options || []).filter((r) => r?.points?.length >= 2).slice(0, max);
+
+    if (list.length >= min) {
+      return relabelRouteOptions(list, NR);
+    }
+
+    list = ensureMinimumRouteOptions(list, NR, origin, dest);
+    list = (list || []).filter((r) => r?.points?.length >= 2).slice(0, max);
+
+    if (list.length < min) {
+      list = appendRouteAlternativesUntilMin(list, NR, origin, dest, min, max);
+    }
+    if (list.length < min) {
+      list = appendSyntheticRouteAlternatives(list, min, NR, origin, dest);
+    }
+
+    return relabelRouteOptions(list.slice(0, max), NR);
   }
 
   /** Bloqueia atalho inválido quando origem é “Estou aqui” genérico → Jardim. */
@@ -2889,9 +3586,26 @@
   function isRouteWallSafe(route, origin, dest) {
     if (!route) return false;
     if (route.namedExternal && route.forceInclude) return true;
-    const lvl = poiLevel(origin) === poiLevel(dest)
-      ? (poiLevel(origin) || "L00")
-      : (poiLevel(origin) || poiLevel(dest) || "L00");
+    const oLvl = poiLevel(origin);
+    const dLvl = poiLevel(dest);
+    const checkLeg = (edgeIds, nodeIds, lvl) => {
+      if (!wallsForLevel(lvl).length) return true;
+      let pts = (edgeIds?.length >= 1 && nodeIds?.length === edgeIds.length + 1 && state.navGraph)
+        ? buildMeshPaintPoints(edgeIds, nodeIds)
+        : null;
+      if (!pts || pts.length < 2) pts = buildMeshPaintPoints(route.edgeIds, route.nodeIds);
+      if (!pts || pts.length < 2) return true;
+      return !routePolylineCrossesWall(pts, lvl);
+    };
+    if (oLvl && dLvl && oLvl !== dLvl && route.nodeIds?.length >= 2 && state.navGraph) {
+      const legs = route.legs?.length ? route.legs : routeLegsFromGraph(route);
+      for (const leg of legs) {
+        if ((leg.edgeIds?.length || 0) < 1) continue;
+        if (!checkLeg(leg.edgeIds, leg.nodeIds, leg.level)) return false;
+      }
+      return true;
+    }
+    const lvl = oLvl === dLvl ? (oLvl || "L00") : (oLvl || dLvl || "L00");
     if (!wallsForLevel(lvl).length) return true;
     let pts = (route.edgeIds?.length >= 1 && route.nodeIds?.length === route.edgeIds.length + 1 && state.navGraph)
       ? buildMeshPaintPoints(route.edgeIds, route.nodeIds)
@@ -2905,9 +3619,11 @@
 
   /** Completa até o mínimo de opções com rotas nomeadas ou A*. */
   function ensureMinimumRouteOptions(options, NR, origin, dest) {
-    const target = origin && dest ? maxRouteOptionsForPair(origin, dest) : DEFAULT_ROUTE_OPTIONS;
+    const min = minRouteOptionsForPair(origin, dest);
+    const max = effectiveMaxRouteOptionsForPair(origin, dest);
     let list = (options || []).slice();
-    if (!NR || !state.navGraph || list.length >= target) return list;
+    if (list.length >= min) return list.slice(0, max);
+    if (!NR || !state.navGraph) return list;
 
     const startIds = resolveNavNodeIds(origin, origin?.id === "__here__" ? "here" : "origin");
     const endIds = resolveNavNodeIds(dest, "dest");
@@ -2918,7 +3634,7 @@
       .sort((a, b) => a.slot - b.slot);
 
     for (const spec of specs) {
-      if (list.length >= target) break;
+      if (list.length >= min) break;
       const external = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, spec);
       if (!external) continue;
       external.slot = spec.slot;
@@ -2929,7 +3645,7 @@
       list.push(external);
     }
 
-    if (list.length < target) {
+    if (list.length < min) {
       const allowParking = tripAllowsParking(origin, dest);
       let astar = NR.findRoutesForPoiPair(startIds, endIds, state.navGraph, {
         preference: "shortest",
@@ -2945,7 +3661,7 @@
       }
       const mpu = getMetersPerUnit();
       for (const r of astar) {
-        if (list.length >= target) break;
+        if (list.length >= min) break;
         const packed = {
           points: r.points,
           length: mpu > 0 ? r.distanceMeters / mpu : 0,
@@ -3068,20 +3784,57 @@
     return route;
   }
 
-  /** Nós + edges usados na pintura (malha completa quando a perna é só um trecho). */
-  function routePaintMesh(leg, route) {
+  /** Nós + edges usados na pintura — sempre do trecho do andar ativo, nunca da rota global. */
+  function sliceRouteMeshForLevel(route, levelId) {
+    if (!route?.nodeIds?.length || !state.navGraph || !levelId) return null;
+    let start = -1;
+    let end = -1;
+    for (let i = 0; i < route.nodeIds.length; i++) {
+      const lvl = state.navGraph.nodesById.get(route.nodeIds[i])?.level;
+      if (lvl !== levelId) continue;
+      if (start < 0) start = i;
+      end = i;
+    }
+    if (start < 0 || end <= start) return null;
+    const nodeIds = route.nodeIds.slice(start, end + 1);
+    const edgeIds = (route.edgeIds || []).slice(start, end);
+    if (nodeIds.length >= 2 && edgeIds.length >= 1) {
+      return { nodeIds, edgeIds };
+    }
+    return null;
+  }
+
+  function routePaintMesh(leg, route, levelId) {
     const legNodes = leg?.nodeIds || [];
     const legEdges = leg?.edgeIds || [];
     const routeNodes = route?.nodeIds || [];
     const routeEdges = route?.edgeIds || [];
     const legOk = legEdges.length >= 1 && legNodes.length === legEdges.length + 1;
-    const routeOk = routeEdges.length >= 1 && routeNodes.length === routeEdges.length + 1;
-    if (routeOk && (!legOk || routeEdges.length >= legEdges.length)) {
-      return { nodeIds: routeNodes, edgeIds: routeEdges };
+
+    if (legOk && (!levelId || leg.level === levelId)) {
+      return { nodeIds: legNodes, edgeIds: legEdges };
     }
+
+    if (levelId) {
+      const sliced = sliceRouteMeshForLevel(route, levelId);
+      if (sliced?.edgeIds?.length >= 1) return sliced;
+    }
+
+    const routeOk = routeEdges.length >= 1 && routeNodes.length === routeEdges.length + 1;
     if (legOk) return { nodeIds: legNodes, edgeIds: legEdges };
     if (routeOk) return { nodeIds: routeNodes, edgeIds: routeEdges };
     return { nodeIds: legNodes.length ? legNodes : routeNodes, edgeIds: legEdges.length ? legEdges : routeEdges };
+  }
+
+  /** Polyline oficial pelos paths das edges — nunca diagonal entre nós distantes. */
+  function officialMeshPaintPoints(leg, route, levelId) {
+    const { nodeIds, edgeIds } = routePaintMesh(leg, route, levelId);
+    if (edgeIds.length < 1 || nodeIds.length !== edgeIds.length + 1) return null;
+    const mesh = buildMeshPaintPoints(edgeIds, nodeIds);
+    if (!mesh || mesh.length < 2) return null;
+    const outdoor = isOutdoorMeshEdgeIds(edgeIds);
+    if (!outdoor && routePolylineCrossesWall(mesh, levelId)) return null;
+    return removePointBacktracks(mesh);
   }
 
   /** Trecho outdoor oficial (Jardim/Servir) — paths do SVG, sem heurística de parede indoor. */
@@ -3250,8 +4003,8 @@
   function shortcutRoutePoints(points, levelId) {
     const pts = (points || []).map((p) => ({ x: p.x, y: p.y }));
     if (pts.length < 3) return pts;
-    // L00 indoor: atalhos diagonais podem cortar paredes mesmo com crossesWall falso negativo
-    if (levelId === "L00") return pts;
+    // Indoor: atalhos diagonais podem cortar paredes (especialmente L00/ADM com falso negativo)
+    if (levelId === "L00" || isAdmFloor(levelId) || isBasementFloor(levelId)) return pts;
     const lvl = levelId || "L00";
     const out = [pts[0]];
     let i = 0;
@@ -3266,25 +4019,22 @@
     return out.length >= 2 ? out : pts;
   }
 
-  /** Prioriza malha oficial quando a polyline atravessa parede. */
+  /** Prioriza malha oficial (paths das edges) — nunca polyline diagonal fora do grafo. */
   function sanitizeRoutePaintPoints(points, leg, route, levelId) {
+    const meshPts = officialMeshPaintPoints(leg, route, levelId);
+    if (meshPts?.length >= 2) {
+      return orthogonalizeRoutePolyline(removePointBacktracks(meshPts), levelId);
+    }
+
     let pts = (points || []).map((p) => ({ x: p.x, y: p.y }));
     if (pts.length < 2) return pts;
 
-    const { nodeIds, edgeIds } = routePaintMesh(leg, route);
-    if (edgeIds.length >= 1 && nodeIds.length === edgeIds.length + 1) {
-      const mesh = buildMeshPaintPoints(edgeIds, nodeIds);
-      const outdoor = isOutdoorMeshEdgeIds(edgeIds);
-      if (mesh?.length >= 2 && (outdoor || !routePolylineCrossesWall(mesh, levelId))) {
-        return removePointBacktracks(mesh);
-      }
+    if (routePolylineCrossesWall(pts, levelId)) {
+      while (pts.length >= 2 && crossesWall(pts[0], pts[1], levelId)) pts.shift();
+      while (pts.length >= 2 && crossesWall(pts[pts.length - 2], pts[pts.length - 1], levelId)) pts.pop();
     }
-
-    if (!routePolylineCrossesWall(pts, levelId)) return removePointBacktracks(pts);
-
-    while (pts.length >= 2 && crossesWall(pts[0], pts[1], levelId)) pts.shift();
-    while (pts.length >= 2 && crossesWall(pts[pts.length - 2], pts[pts.length - 1], levelId)) pts.pop();
-    return removePointBacktracks(pts.length >= 2 ? pts : (points || []));
+    pts = removePointBacktracks(pts.length >= 2 ? pts : (points || []));
+    return orthogonalizeRoutePolyline(pts, levelId);
   }
 
   function refineRoutePolyline(points, levelId) {
@@ -3374,9 +4124,11 @@
   function applyRoutePolylineRefinement(route, origin, dest) {
     if (route?.kind === "templo" && route.fromJson) return route;
     if (!route?.points || route.points.length < 3) return route;
-    const lvl = poiLevel(origin) === poiLevel(dest)
-      ? (poiLevel(origin) || "L00")
-      : (poiLevel(dest) || poiLevel(origin) || "L00");
+    const oLvl = poiLevel(origin);
+    const dLvl = poiLevel(dest);
+    // Rotas multi-andar: nunca encurtar polyline global (evita diagonal entre andares)
+    if (oLvl && dLvl && oLvl !== dLvl) return route;
+    const lvl = oLvl === dLvl ? (oLvl || "L00") : (oLvl || dLvl || "L00");
     const refined = refineRoutePolyline(route.points, lvl);
     if (refined.length < 2) return route;
     if (routePolylineCrossesWall(refined, lvl)) return route;
@@ -3505,6 +4257,95 @@
   ];
 
   const RGO_CONEXAO_NAMED_LABEL = "Pelo corredor interno";
+
+  const TO_CF_INTERIOR_LABEL = "Pelo corredor do estabelecimento";
+  const TO_CF_WEST_LABEL = "Corredor oeste · CF";
+  const TO_CF_NAMED_LABELS = [TO_CF_INTERIOR_LABEL, TO_CF_WEST_LABEL];
+
+  const L00_INTERIOR_TERRAIN_LABEL = "Pela área interna do térreo";
+
+  function matchPoiKeySide(side, key) {
+    if (!key) return false;
+    if (Array.isArray(side)) {
+      return side.some((item) => {
+        const t = String(item);
+        return t === key || t.toLowerCase() === key.toLowerCase()
+          || key.endsWith(t) || t.endsWith(key);
+      });
+    }
+    return side === key;
+  }
+
+  function l00TerrainZone(poi) {
+    const cfg = CONFIG.l00InteriorTerrain;
+    if (!cfg || !poi) return null;
+    const key = poiRawKey(poi);
+    if (matchPoiKeySide(cfg.northKeys, key)) return "north";
+    if (matchPoiKeySide(cfg.southKeys, key)) return "south";
+    if (matchPoiKeySide(cfg.westKeys, key)) return "west";
+    return null;
+  }
+
+  /** Par L00 entre extremos do terreno (CF/RGO ↔ hall/conexão/elevador ou jardim). */
+  function isL00InteriorTerrainPair(origin, dest) {
+    if (!origin || !dest) return false;
+    if (poiLevel(origin) !== "L00" || poiLevel(dest) !== "L00") return false;
+    if (isBasementFloor(poiLevel(origin)) || isBasementFloor(poiLevel(dest))) return false;
+    const oz = l00TerrainZone(origin);
+    const dz = l00TerrainZone(dest);
+    if (!oz || !dz || oz === dz) return false;
+    return true;
+  }
+
+  function buildL00InteriorTerrainSpec(origin, dest) {
+    const cfg = CONFIG.l00InteriorTerrain;
+    if (!cfg) return null;
+    const oz = l00TerrainZone(origin);
+    const dz = l00TerrainZone(dest);
+    if (!oz || !dz || oz === dz) return null;
+    const pairKey = `${oz}-${dz}`;
+    const viaMap = {
+      "north-south": cfg.northToSouthVia,
+      "south-north": cfg.southToNorthVia,
+      "west-north": cfg.westToNorthVia,
+      "north-west": cfg.westToNorthVia?.slice?.().reverse(),
+      "west-south": cfg.westToSouthVia,
+      "south-west": cfg.westToSouthVia?.slice?.().reverse(),
+    };
+    let via = viaMap[pairKey];
+    if (!via?.length) {
+      if (oz === "north" || dz === "north") via = oz === "north" ? cfg.northToSouthVia : cfg.southToNorthVia;
+      else via = cfg.westToSouthVia;
+    }
+    if (!via?.length) return null;
+    const endNodes = dz === "north" ? cfg.northEndNodes
+      : dz === "south" ? cfg.southEndNodes
+        : cfg.westEndNodes;
+    return {
+      via: via.slice(),
+      endNodes: (endNodes || []).slice(),
+      label: cfg.label || L00_INTERIOR_TERRAIN_LABEL,
+      avoidParking: false,
+      allowParking: true,
+      slot: cfg.slot ?? 1,
+    };
+  }
+
+  function isCfDestinationKey(key) {
+    return /P005_centro_de_formacao|P004_sala_de_oracao_RGO|centro_de_formacao|formacao_cf|startkids-10-12/i.test(String(key || ""));
+  }
+
+  function isToCfPair(origin, dest) {
+    if (!origin || !dest) return false;
+    const oKey = poiRawKey(origin);
+    const dKey = poiRawKey(dest);
+    if (isCfDestinationKey(oKey) && isCfDestinationKey(dKey)) return false;
+    if (isCfDestinationKey(dKey)) return true;
+    const dName = normSearch(dest.searchLabel || dest.name || "");
+    if (!/salas start \(10 a 12|centro de formacao|formacao cf|^cf$/.test(dName)) return false;
+    const oName = normSearch(origin.searchLabel || origin.name || "");
+    return !/salas start \(10 a 12|centro de formacao|formacao cf|^cf$/.test(oName);
+  }
 
   function isRgoToConexaoPair(origin, dest) {
     if (!origin || !dest) return false;
@@ -3724,6 +4565,8 @@
       options = buildGuaranteedRouteOptions(origin, dest, NR);
     }
 
+    options = enforceMinimumRouteOptions(options, NR, origin, dest);
+
     return options.filter((r) => r?.points?.length >= 2);
   }
 
@@ -3874,9 +4717,9 @@
     return routes;
   }
 
-  /** Remove duplicatas preservando ordem; máx. 4 opções distintas. */
+  /** Remove duplicatas preservando ordem; nunca menos que minRouteOptionsForPair. */
   function dedupeRouteOptionsStrict(routes, NR, origin, dest) {
-    const cap = origin && dest ? maxRouteOptionsForPair(origin, dest) : MAX_ROUTE_OPTIONS;
+    const cap = origin && dest ? effectiveMaxRouteOptionsForPair(origin, dest) : MAX_ROUTE_OPTIONS;
     const isStair = (r) => !!r.viaStairs;
     const forced = (routes || []).filter((r) => r?.forceInclude && r.points?.length >= 2);
     const unique = [];
@@ -4162,6 +5005,57 @@
     return list;
   }
 
+  /** Garante rotas L00 → CF com alternativa pelo corredor interno do estabelecimento. */
+  function ensureToCfNamedRoutes(NR, startIds, endIds, origin, dest, packed) {
+    if (!isToCfPair(origin, dest)) return packed;
+    let list = packed ? packed.slice() : [];
+    for (const label of TO_CF_NAMED_LABELS) {
+      if (list.some((r) => r.label === label)) continue;
+      const spec = (CONFIG.namedExternalRoutes || []).find((r) => r.label === label);
+      if (!spec) continue;
+      const external = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, spec);
+      if (!external) continue;
+      external.slot = spec.slot;
+      external.label = spec.label;
+      if (label === TO_CF_INTERIOR_LABEL) external.forceInclude = true;
+      if (!list.some((r) => isDuplicateRoute(r, external) || r.label === external.label)) {
+        list.push(external);
+      }
+    }
+    list.sort((a, b) => {
+      const sa = a.slot ?? (a.namedExternal ? 50 : 0);
+      const sb = b.slot ?? (b.namedExternal ? 50 : 0);
+      if (sa !== sb) return sa - sb;
+      return (a.length || 0) - (b.length || 0);
+    });
+    return list;
+  }
+
+  /** Alternativa pelo corredor interno do térreo (conexão Templo/Jardim). */
+  function ensureL00InteriorTerrainRoutes(NR, startIds, endIds, origin, dest, packed) {
+    if (!isL00InteriorTerrainPair(origin, dest)) return packed;
+    const spec = buildL00InteriorTerrainSpec(origin, dest);
+    if (!spec?.via?.length) return packed;
+    let list = packed ? packed.slice() : [];
+    const label = spec.label || L00_INTERIOR_TERRAIN_LABEL;
+    if (list.some((r) => r.label === label)) return list;
+    const external = buildNamedExternalRoute(NR, startIds, endIds, origin, dest, spec);
+    if (!external) return list;
+    external.slot = spec.slot;
+    external.label = label;
+    external.forceInclude = true;
+    if (!list.some((r) => isDuplicateRoute(r, external) || r.label === external.label)) {
+      list.push(external);
+    }
+    list.sort((a, b) => {
+      const sa = a.slot ?? (a.namedExternal ? 50 : 0);
+      const sb = b.slot ?? (b.namedExternal ? 50 : 0);
+      if (sa !== sb) return sa - sb;
+      return (a.length || 0) - (b.length || 0);
+    });
+    return list;
+  }
+
   /** 4ª alternativa: sobe/desce pela escada lateral (L00 ↔ L01…L06). */
   function appendAdmStairOption(NR, startIds, endIds, origin, dest, packed) {
     const oLvl = poiLevel(origin);
@@ -4417,6 +5311,18 @@
         }
       }
     }
+    if ((!pts?.length || pts.length < 2) && isCrossFloorTrip(oLvl, dLvl)) {
+      if (crossFloorExitLeg(lvl, oLvl, dLvl) && poiAnchorsVerticalHub(state.origin, lvl, state.route)) {
+        const spur = verticalHubSpurPoints(lvl, state.route);
+        if (spur?.points?.length >= 2) pts = spur.points.map((p) => ({ x: p.x, y: p.y }));
+      } else if (crossFloorEntryLeg(lvl, oLvl, dLvl) && poiAnchorsVerticalHub(state.dest, lvl, state.route)) {
+        const spur = verticalHubSpurPoints(lvl, state.route);
+        if (spur?.points?.length >= 2) pts = spur.points.map((p) => ({ x: p.x, y: p.y }));
+      } else if (crossFloorTransitLeg(lvl, oLvl, dLvl)) {
+        const spur = verticalHubSpurPoints(lvl, state.route);
+        if (spur?.points?.length >= 2) pts = spur.points.map((p) => ({ x: p.x, y: p.y }));
+      }
+    }
     if (!pts?.length || pts.length < 2) {
       clearRoutePaint();
       return;
@@ -4425,10 +5331,11 @@
       pts = [pts[0], { x: pts[0].x + 0.5, y: pts[0].y }];
     }
 
-    if (isBasementExitActiveLeg(lvl, oLvl, dLvl)) {
-      pts = finalizeBasementExitLegPoints(pts, lvl);
-    } else if (crossFloorExitLeg(lvl, oLvl, dLvl) || crossFloorEntryLeg(lvl, oLvl, dLvl)) {
+    if (crossFloorExitLeg(lvl, oLvl, dLvl) || crossFloorEntryLeg(lvl, oLvl, dLvl)) {
       pts = extendCrossFloorLegPoints(pts, lvl, oLvl, dLvl, state.route);
+    } else if (isBasementEntryActiveLeg(lvl, oLvl, dLvl) || isBasementExitActiveLeg(lvl, oLvl, dLvl)
+      || isBasementEncomunExitActiveLeg(lvl, oLvl, dLvl)) {
+      /* malha oficial — sem spur diagonal até ícone de outro andar */
     } else if (oLvl === dLvl && oLvl === lvl) {
       pts = appendPoiEndpoints(pts, state.origin, state.dest);
     } else if (oLvl === lvl || (isNarniaEntrancePoi(state.origin) && narniaLevelForPoi(state.origin) === lvl)) {
@@ -4470,6 +5377,13 @@
     }
 
     pts = sanitizeRoutePaintPoints(pts, leg, state.route, lvl);
+    if (isBasementExitActiveLeg(lvl, oLvl, dLvl)) {
+      pts = finalizeBasementExitLegPoints(pts, lvl);
+    } else if (isBasementEncomunExitActiveLeg(lvl, oLvl, dLvl)) {
+      pts = finalizeEncomunExitLegPoints(pts, lvl);
+    } else if (isBasementEntryActiveLeg(lvl, oLvl, dLvl)) {
+      pts = finalizeBasementExitLegPoints(pts, "L00");
+    }
     if (state.route?.kind === "templo" && oLvl === dLvl && dLvl === lvl) {
       pts = ensureTempleEntranceRouteEndpoint(pts, state.route, lvl);
     }
@@ -4477,6 +5391,7 @@
       pts = ensureGardenRouteNodeEndpoint(pts, state.dest, lvl, state.route, leg);
     }
     pts = removePointBacktracks(pts);
+    pts = orthogonalizeRoutePolyline(pts, lvl);
 
     const a = pts[0];
     const b = pts[pts.length - 1];
@@ -4949,6 +5864,8 @@
     let packed = pack(routes);
     packed = appendNamedExternalOptions(NR, startIds, endIds, origin, dest, packed);
     packed = ensureCfJardimNamedRoutes(NR, startIds, endIds, origin, dest, packed);
+    packed = ensureToCfNamedRoutes(NR, startIds, endIds, origin, dest, packed);
+    packed = ensureL00InteriorTerrainRoutes(NR, startIds, endIds, origin, dest, packed);
     packed = ensureRgoConexaoNamedRoutes(NR, startIds, endIds, origin, dest, packed);
     return finalizePackedRoutes(packed, NR, origin, dest);
   }
@@ -5285,60 +6202,89 @@
         drawCalibrationMarks(state.calibration.startPoint, state.calibration.endPoint);
       }
       fitSoon();
-      initUserLocation();
+      syncGpsAvailability();
     } catch (err) {
       el.statusHint.textContent = `Não foi possível montar o mapa: ${err.message}`;
       console.error(err);
     }
   }
 
-  async function initUserLocation() {
-    if (state.userLocation) return;
-    try {
-      await globalThis.PIBMapDeferred?.loadGpsStack?.();
-    } catch (err) {
-      console.warn("GPS stack defer:", err);
-    }
-    if (typeof UserLocationSystem === "undefined") {
-      console.warn("UserLocationSystem não carregou (scripts js/ ausentes no deploy?).");
-      if (el.locBtn && !el.locBtn._bound) {
-        el.locBtn._bound = true;
-        el.locBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          toast("Localização GPS não disponível neste deploy. Verifique se os arquivos js/ foram publicados.");
-        });
-      }
-      initGpsOrientation();
+  function isGpsEnabled() {
+    return isMobileLayout();
+  }
+
+  function syncGpsAvailability() {
+    const on = isGpsEnabled();
+    document.documentElement.dataset.gps = on ? "1" : "0";
+    if (on) {
+      initUserLocation();
       return;
     }
-    initLiveNavigation();
-    state.userLocation = UserLocationSystem.create({
-      overlay: el.overlay,
-      getOverlay: () => el.overlay,
-      viewport: el.viewport,
-      canvas: el.canvas,
-      locBtn: el.locBtn,
-      gpsCompass: el.gpsCompass,
-      gpsCompassArrow: el.gpsCompassArrow,
-      getState: () => state,
-      setState: (patch) => { Object.assign(state, patch); },
-      apply,
-      clamp,
-      getViewBox: () => ({ w: G.vbW, h: G.vbH }),
-      getMetersPerUnit,
-      getMapScale: () => state.scale || 1,
-      toast,
-      ensureCampusView: () => {
-        if (state.activeLevel === "L00") return;
-        // GPS / puck usam coordenadas do campus — força L00 sem limpar a viagem
-        return setActiveLevel("L00", { keepTrip: true, silent: true });
-      },
-    });
-    // Não auto-inicia: permissão de GPS/bússola precisa de gesto do usuário (clique no botão).
-    initGpsOrientation();
+    state.gpsOrientation?.getTracking()?.stop();
+    state.gpsOrientation?.setGpsButtonState?.("IDLE");
+    state.userLocation?.stop?.();
+    state.userLocation?.hidePuck?.();
+    if (el.gpsCompass) {
+      el.gpsCompass.hidden = true;
+      el.gpsCompass.setAttribute("hidden", "");
+      el.gpsCompass.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  async function initUserLocation() {
+    if (state.userLocation || state._gpsInitPending) return;
+    if (!isGpsEnabled()) return;
+    state._gpsInitPending = true;
+    try {
+      try {
+        await globalThis.PIBMapDeferred?.loadGpsStack?.();
+      } catch (err) {
+        console.warn("GPS stack defer:", err);
+      }
+      if (typeof UserLocationSystem === "undefined") {
+        console.warn("UserLocationSystem não carregou (scripts js/ ausentes no deploy?).");
+        if (el.locBtn && !el.locBtn._bound) {
+          el.locBtn._bound = true;
+          el.locBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            toast("Localização GPS não disponível neste deploy. Verifique se os arquivos js/ foram publicados.");
+          });
+        }
+        initGpsOrientation();
+        return;
+      }
+      initLiveNavigation();
+      state.userLocation = UserLocationSystem.create({
+        overlay: el.overlay,
+        getOverlay: () => el.overlay,
+        viewport: el.viewport,
+        canvas: el.canvas,
+        locBtn: el.locBtn,
+        gpsCompass: el.gpsCompass,
+        gpsCompassArrow: el.gpsCompassArrow,
+        getState: () => state,
+        setState: (patch) => { Object.assign(state, patch); },
+        apply,
+        clamp,
+        getViewBox: () => ({ w: G.vbW, h: G.vbH }),
+        getMetersPerUnit,
+        getMapScale: () => state.scale || 1,
+        toast,
+        ensureCampusView: () => {
+          if (state.activeLevel === "L00") return;
+          // GPS / puck usam coordenadas do campus — força L00 sem limpar a viagem
+          return setActiveLevel("L00", { keepTrip: true, silent: true });
+        },
+      });
+      // Não auto-inicia: permissão de GPS/bússola precisa de gesto do usuário (clique no botão).
+      initGpsOrientation();
+    } finally {
+      state._gpsInitPending = false;
+    }
   }
 
   function initGpsOrientation() {
+    if (!isGpsEnabled()) return;
     if (state.gpsOrientation || typeof GpsOrientation === "undefined") return;
 
     let cachedGeo = null;
@@ -5875,13 +6821,15 @@
   }
 
   function crossesWall(a, b, levelId) {
+    const pa = navPointToWallSpace(a, levelId);
+    const pb = navPointToWallSpace(b, levelId);
     const walls = wallsForLevel(levelId);
-    if (!a || !b || !walls.length) return false;
+    if (!pa || !pb || !walls.length) return false;
     // amostras ao longo do segmento (pega atravessamento de paredes finas)
     const samples = 9;
     for (let s = 1; s < samples; s++) {
       const t = s / samples;
-      const pt = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      const pt = { x: pa.x + (pb.x - pa.x) * t, y: pa.y + (pb.y - pa.y) * t };
       for (const poly of walls) {
         if (poly.length >= 3 && pointInPoly(pt, poly)) return true;
       }
@@ -5891,9 +6839,9 @@
       for (let i = 0; i < n; i++) {
         const p = poly[i], q = poly[(i + 1) % n];
         if (n < 3 && i === n - 1) break;
-        if (!segmentsIntersect(a, b, p, q)) continue;
+        if (!segmentsIntersect(pa, pb, p, q)) continue;
         // permite raspar a parede; NÃO atravessar pelo meio
-        if (distToSeg(a, p, q) < 1.0 || distToSeg(b, p, q) < 1.0) continue;
+        if (distToSeg(pa, p, q) < 1.0 || distToSeg(pb, p, q) < 1.0) continue;
         return true;
       }
     }
@@ -6340,10 +7288,14 @@
     return "Campus";
   }
 
-  /** Grupo de filtro (salas, auditórios, banheiros, elevadores). */
+  /** Grupo de filtro (salas, auditórios, banheiros, elevadores, emergência). */
   function searchGroupFromPoi(rawId, name, cat) {
     const id = norm(rawId || "");
     const n = norm(name || "");
+    if (/emerg|ambulatorio|primeirossocorros|saidadeemergencia/.test(id)
+      || /emerg|ambulatorio|primeiros socorros|saida de emergencia/.test(n)) {
+      return "emergencia";
+    }
     if (/elevador/.test(id) || /elevador/.test(n)) return "elevadores";
     if (/banheiro|wc|sanitario/.test(id) || /banheiro|wc|sanitario/.test(n)) return "banheiros";
     if (/templo|capela|auditorio/.test(id) || /templo|capela|auditorio/.test(n)) return "auditorios";
@@ -6527,6 +7479,7 @@
 
     rebuildL00PoiIndex();
     injectHiddenRoutePois();
+    injectHiddenSearchPois();
 
     G.pois.forEach((poi) => {
       if (poi.fromLayerIndex || l00()?.hasOfficialLayerNode(poi)) return;
@@ -7001,11 +7954,15 @@
             state._ignoreNextPoiClick = false;
             const poi = G.pois.find((p) => p.id === poiId);
             if (!poi || !isSearchablePoi(poi)) return;
+            const field = state.placingHereField || "origin";
             state.placingHere = false;
+            state.placingHereField = "origin";
             el.viewport.style.cursor = "";
             enrichTripPoi(poi);
-            setField("origin", poi);
-            toast(`Você está em: ${poi.searchLabel || poi.name}`);
+            setField(field, poi);
+            toast(field === "dest"
+              ? `Destino: ${poi.searchLabel || poi.name}`
+              : `Você está em: ${poi.searchLabel || poi.name}`);
             return;
           }
           state._ignoreNextPoiClick = false;
@@ -8182,9 +9139,37 @@
 
   function refreshRouteMarkerScales() {
     const c = state._routeMarkerCache;
-    if (!c || el.routeStart?.hasAttribute("hidden")) return;
-    paintRouteMarker(el.routeStart, "start", c.start, c.bearing);
-    paintRouteMarker(el.routeEnd, "end", c.end);
+    if (c && el.routeStart && !el.routeStart.hasAttribute("hidden")) {
+      paintRouteMarker(el.routeStart, "start", c.start, c.bearing);
+      paintRouteMarker(el.routeEnd, "end", c.end);
+    }
+    paintMapPickMarkers();
+  }
+
+  function mapPickMarkerScale() {
+    return Math.max(0.55, 1 / Math.max(0.08, state.scale || 1));
+  }
+
+  function paintMapPickMarkerNode(node, pt, visible) {
+    if (!node) return;
+    if (!visible || !pt || !isFinite(pt.x) || !isFinite(pt.y)) {
+      node.hidden = true;
+      node.setAttribute("hidden", "");
+      node.setAttribute("visibility", "hidden");
+      return;
+    }
+    const s = mapPickMarkerScale();
+    node.removeAttribute("hidden");
+    node.removeAttribute("visibility");
+    node.hidden = false;
+    node.setAttribute("visibility", "visible");
+    node.setAttribute("transform", `translate(${pt.x} ${pt.y}) scale(${s})`);
+  }
+
+  function paintMapPickMarkers() {
+    paintMapPickMarkerNode(el.mapPickPinPreview, state.mapPickPreview, true);
+    paintMapPickMarkerNode(el.mapPickPinOrigin, state.mapPickOrigin, !state.route);
+    paintMapPickMarkerNode(el.mapPickPinDest, state.mapPickDest, !state.route);
   }
 
   function paintRouteMarker(node, kind, pt, bearing) {
@@ -8415,9 +9400,12 @@
     let options = collectRouteOptionsForTrip(state.origin, state.dest);
     if (!options.length) return;
 
+    options = enforceMinimumRouteOptions(options, globalThis.NavigationRouter, state.origin, state.dest);
+    if (options.length < minRouteOptionsForPair(state.origin, state.dest)) return;
+
     state.routeOptions = options;
     state.routePickOpen = true;
-    // No celular: fecha o painel antes do zoom para a rota caber no viewport
+    // No celular: fecha o painel para liberar espaço ao mapa completo
     if (isMobileLayout()) setPanelOpen(false);
     await selectRoute(preferredTempleRouteIndex(options, state.dest), true);
     updateSummaryChrome();
@@ -8426,6 +9414,10 @@
       toast(`${n} rotas até o Espaço Servir — toque nas opções abaixo para alternar.`);
     } else if (isCfToJardimPair(state.origin, state.dest) && n >= 2) {
       toast(`${n} rotas CF → Jardim — toque nas opções abaixo para alternar.`);
+    } else if (isToCfPair(state.origin, state.dest) && n >= 2) {
+      toast(`${n} rotas até o CF — inclui opção pelo corredor do estabelecimento. Toque abaixo para alternar.`);
+    } else if (isL00InteriorTerrainPair(state.origin, state.dest) && n >= 2) {
+      toast(`${n} rotas no térreo — inclui opção pela área interna. Toque abaixo para alternar.`);
     } else if (isRgoToConexaoPair(state.origin, state.dest) && n >= 2) {
       toast(`${n} rotas RGO → Espaço conexão — toque nas opções abaixo para alternar.`);
     } else if (involvesAdmFloorCross(poiLevel(state.origin), poiLevel(state.dest)) && n >= 2) {
@@ -8433,8 +9425,8 @@
     } else if (isTempleDestination(state.dest) && n >= 2) {
       toast(`${n} entradas do Templo — toque nas opções abaixo para escolher.`);
     } else {
-      toast(n > 1
-        ? `${n} rotas — Rota 1 (mais curta) selecionada.`
+      toast(n >= 2
+        ? `${n} rotas disponíveis — toque em Opções de rota para alternar.`
         : "Rota traçada até o destino.");
     }
   }
@@ -8486,14 +9478,16 @@
       }
       if (multi) {
         if (routeInvolvesBasementTransfer(oLvl, dLvl)) {
-          const startHint = isBasementFloor(oLvl) && viewLevel === "L00"
-            ? `Trecho no Térreo: da Porta de Nárnia até ${state.dest.searchLabel || state.dest.name}. Troque para ${formatFloorTag(oLvl)} para ver o caminho no subsolo.`
+          const startHint = isBasementEncomunTrip(oLvl, dLvl)
+            ? `Comece em ${floorTitle(oLvl)}: siga até o ${CONFIG.encomunTransfer?.[oLvl]?.label || "Encomun"}.`
             : isBasementFloor(oLvl)
               ? `Comece em ${floorTitle(oLvl)}: siga até a ${narniaGateLabel(oLvl)} (saída do subsolo).`
-              : !isAdmFloor(oLvl)
-                ? "Comece pelo mapa do Térreo (L00)."
-                : `Comece pelo mapa de ${floorTitle(oLvl)}.`;
-          toast(`${startHint} Ao entrar na Porta de Nárnia, o mapa muda de andar. Troque o andar para ver cada trecho.`);
+              : isBasementFloor(dLvl)
+                ? `Comece no Térreo: siga até a ${narniaGateLabel("L00")} para descer ao subsolo.`
+                : !isAdmFloor(oLvl)
+                  ? "Comece pelo mapa do Térreo (L00)."
+                  : `Comece pelo mapa de ${floorTitle(oLvl)}.`;
+          toast(`${startHint} Troque o andar para ver cada trecho da rota.`);
         } else if (routeUsesLateralStairs(route)) {
           const arrive = stairHub(dLvl);
           toast(`Via escada lateral: saia em ${arrive?.label || floorTitle(dLvl)} e siga até ${state.dest.name}. Troque o andar para ver cada trecho.`);
@@ -8511,13 +9505,20 @@
     const NR = globalThis.NavigationRouter;
     let options = state.routeOptions || [];
     const cfForced = isCfToJardimPair(state.origin, state.dest) && options.some((r) => r.forceInclude);
+    const toCfForced = isToCfPair(state.origin, state.dest) && options.some((r) => r.forceInclude);
+    const l00InteriorForced = isL00InteriorTerrainPair(state.origin, state.dest)
+      && options.some((r) => r.label === L00_INTERIOR_TERRAIN_LABEL);
     const rgoConexaoForced = isRgoToConexaoPair(state.origin, state.dest) && options.some((r) => r.forceInclude);
     const crossFloorForced = involvesAdmFloorCross(poiLevel(state.origin), poiLevel(state.dest))
       && options.some((r) => r.forceInclude && (r.kind === "elevator" || r.kind === "stairs" || r.viaStairs));
-    if (!cfForced && !rgoConexaoForced && !crossFloorForced) {
-      options = dedupeRouteOptionsStrict(options, NR, state.origin, state.dest);
+    if (!cfForced && !toCfForced && !l00InteriorForced && !rgoConexaoForced && !crossFloorForced) {
+      const deduped = dedupeRouteOptionsStrict(options, NR, state.origin, state.dest);
+      if (deduped.length >= minRouteOptionsForPair(state.origin, state.dest)) {
+        options = deduped;
+      }
     }
-    if (options.length !== (state.routeOptions || []).length) {
+    options = enforceMinimumRouteOptions(options, NR, state.origin, state.dest);
+    if (options.length !== (state.routeOptions || []).length || options.some((r, i) => r !== state.routeOptions[i])) {
       state.routeOptions = options;
       if (state.routeIdx >= options.length) state.routeIdx = Math.max(0, options.length - 1);
     }
@@ -8529,14 +9530,18 @@
       return;
     }
 
-    el.routePick.hidden = false;
+    el.routePick.hidden = options.length < 2;
     const templeTrip = (isTemplePoi(state.dest) || isTemplePoi(state.origin))
       && options.length >= 2
       && options.every((r) => r.kind === "templo");
     if (el.routePickLabel) {
       el.routePickLabel.textContent = cfForced
         ? "Opções de rota · CF → Jardim"
-        : rgoConexaoForced
+        : toCfForced
+          ? "Opções de rota · até o CF"
+          : l00InteriorForced
+            ? "Opções de rota · térreo (área interna)"
+            : rgoConexaoForced
           ? "Opções de rota · RGO → Espaço conexão"
           : crossFloorForced
             ? "Opções de rota · Elevador T / Escadas laterais"
@@ -8549,26 +9554,47 @@
       el.routePickCount.textContent = `${options.length} opções`;
     }
 
-    el.routeOptions.hidden = false;
-    el.routeOptions.innerHTML = options.map((r, i) => {
-      const active = i === state.routeIdx ? " is-active" : "";
-      const name = r.label
-        || (i === 0 ? "Rota 1 — Mais curta"
-          : i === 1 ? "Rota 2 — Alternativa"
-          : i === 2 ? "Rota 3 — Alternativa"
-          : "Rota 4 — Alternativa");
-      return `<button type="button" class="route-opt${active}" data-idx="${i}">
+    el.routeOptions.hidden = options.length < 2;
+    if (options.length >= 2) {
+      el.routeOptions.innerHTML = options.map((r, i) => {
+        const active = i === state.routeIdx ? " is-active" : "";
+        const name = r.label
+          || (i === 0 ? "Rota 1 — Mais curta"
+            : i === 1 ? "Rota 2 — Alternativa"
+            : i === 2 ? "Rota 3 — Alternativa"
+            : "Rota 4 — Alternativa");
+        return `<button type="button" class="route-opt${active}" data-idx="${i}">
         <span class="route-opt__badge">${i + 1}</span>
         <span class="route-opt__txt"><span class="route-opt__name">${name}</span>
         <span class="route-opt__dist">${fmtMeters(r.length)}</span></span>
       </button>`;
-    }).join("");
-    el.routeOptions.querySelectorAll(".route-opt").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        selectRoute(+btn.dataset.idx, true);
+      }).join("");
+      el.routeOptions.querySelectorAll(".route-opt").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          selectRoute(+btn.dataset.idx, true);
+        });
       });
-    });
+    } else {
+      el.routeOptions.innerHTML = "";
+    }
+  }
+
+  function resetTripSearchPanel() {
+    state.origin = null;
+    state.dest = null;
+    state.navIdx = 0;
+    state.guideStepIdx = 0;
+    state.activeField = null;
+    if (el.originInput) el.originInput.value = "";
+    if (el.destInput) el.destInput.value = "";
+    if (el.summaryDist) el.summaryDist.textContent = "—";
+    if (el.summaryTime) el.summaryTime.textContent = "—";
+    if (el.summaryMeta) el.summaryMeta.textContent = "—";
+    if (el.steps) el.steps.innerHTML = "";
+    closeSuggest();
+    exitMobileSearchMode();
+    highlightSelected();
   }
 
   function clearRoute(silent) {
@@ -8578,8 +9604,11 @@
     state.routeIdx = 0;
     state.routePickOpen = false;
     clearRoutePaint();
+    state.mapPickPreview = null;
+    paintMapPickMarkers();
     if (el.routePick) el.routePick.hidden = true;
     if (el.routeOptions) { el.routeOptions.hidden = true; el.routeOptions.innerHTML = ""; }
+    if (!silent) resetTripSearchPanel();
     updateSummaryChrome();
     if (!silent) toast("Rota removida.");
   }
@@ -8594,7 +9623,7 @@
     });
   }
 
-  function setField(which, poi) {
+  function setField(which, poi, opts = {}) {
     if (!poi) return;
     poi = enrichTripPoi({ ...resolveCampusPoiForUi(poi) });
     const GFRM = gfr();
@@ -8625,7 +9654,7 @@
       toast(poi.accessNote);
     }
 
-    if (state.origin && state.dest) {
+    if (!opts.skipRoute && state.origin && state.dest) {
       drawRoute();
       return;
     }
@@ -8658,6 +9687,18 @@
     const q = normSearch(effectiveQuery);
     // Sem texto: não monta centenas de sugestões (evita salto de scroll no mobile e cursor resetado).
     if (!q) return [];
+    const startKidsItems = collapseStartKidsSearchResults(effectiveQuery);
+    if (startKidsItems?.length) {
+      state.groundFloorSearchHint = CONFIG.startKidsSearch?.hint || null;
+      return startKidsItems;
+    }
+    const bebedouroItems = isBebedouroSearchQuery(effectiveQuery)
+      ? collapseBebedouroSearchResults()
+      : null;
+    if (bebedouroItems?.length) {
+      state.groundFloorSearchHint = null;
+      return bebedouroItems;
+    }
     const GFRM = gfr();
     if (GFRM) {
       const { hint, items } = GFRM.search(effectiveQuery, state.navGraph, G.nodes, G.adj);
@@ -8698,7 +9739,7 @@
         effectiveQuery
       );
     }
-    return results;
+    return dedupeSearchPoiResults(results);
   }
 
   /** Mantém o cursor no fim ao digitar (evita texto invertido "fc" ao buscar "CF"). */
@@ -8730,6 +9771,23 @@
     requestAnimationFrame(restoreCaret);
   }
 
+  function hereSuggestHtml(which) {
+    const isOrigin = which === "origin";
+    const name = isOrigin ? "Estou aqui (marcar no mapa)" : "Marcar no mapa (destino)";
+    const cat = isOrigin ? "Usar minha posição" : "Toque onde você quer ir";
+    return `<li data-here="1" aria-selected="false"><span class="s-ico"><svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></span><span><span class="s-name">${name}</span><span class="s-cat">${cat}</span></span></li>`;
+  }
+
+  function bindHereSuggestItem(listEl, which) {
+    const hereLi = listEl.querySelector("li[data-here]");
+    if (hereLi) {
+      hereLi.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        startPlacingHere(which);
+      });
+    }
+  }
+
   function renderSuggest(which, query) {
     state.activeField = which;
     const listEl = which === "origin" ? el.originList : el.destList;
@@ -8743,27 +9801,18 @@
     if (showCorrection) {
       html += `<li class="s-hint" role="presentation"><span class="s-cat">Você quis dizer: <strong>${correction}</strong>?</span></li>`;
     }
-    if (which === "origin") {
-      html += `<li data-here="1" aria-selected="false"><span class="s-ico"><svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></span><span><span class="s-name">Estou aqui (marcar no mapa)</span><span class="s-cat">Usar minha posição</span></span></li>`;
-    }
-    if (state.groundFloorSearchHint && items.length && items[0]?.officialAccessNodeId) {
+    html += hereSuggestHtml(which);
+    if (state.groundFloorSearchHint && items.length
+      && (items[0]?.officialAccessNodeId || items[0]?.startKidsGuide)) {
       html += `<li class="s-hint" role="presentation"><span class="s-cat">${state.groundFloorSearchHint}</span></li>`;
     }
-    if (!items.length && which !== "origin") {
-      listEl.innerHTML = normSearch(query)
-        ? `<li class="s-empty">Nenhum local encontrado para “${String(query).trim()}”.</li>`
-        : `<li class="s-empty">Digite para buscar um local.</li>`;
-      listEl.hidden = false;
-      return;
-    }
-    if (!items.length && which === "origin") {
+    if (!items.length) {
       if (normSearch(query)) {
         html += `<li class="s-empty">Nenhum local encontrado para “${String(query).trim()}”.</li>`;
       }
-      listEl.innerHTML = html || `<li class="s-empty">Nenhum local neste filtro.</li>`;
+      listEl.innerHTML = html;
       listEl.hidden = false;
-      const hereOnly = listEl.querySelector("li[data-here]");
-      if (hereOnly) hereOnly.addEventListener("mousedown", (e) => { e.preventDefault(); startPlacingHere(); });
+      bindHereSuggestItem(listEl, which);
       return;
     }
     html += items.map((p) => {
@@ -8786,8 +9835,7 @@
         if (poi) setField(which, poi);
       });
     });
-    const hereLi = listEl.querySelector("li[data-here]");
-    if (hereLi) hereLi.addEventListener("mousedown", (e) => { e.preventDefault(); startPlacingHere(); });
+    bindHereSuggestItem(listEl, which);
   }
 
   function closeSuggest() { el.originList.hidden = true; el.destList.hidden = true; }
@@ -8844,8 +9892,10 @@
   }
 
   function initMobileViewport() {
+    syncGpsAvailability();
     syncVisualViewportVars();
     const onVV = () => {
+      syncGpsAvailability();
       syncVisualViewportVars();
       if (isMobileLayout() && el.panel?.classList.contains("is-searching")) {
         // se o teclado fechou e nenhum campo tem foco, sai do modo busca
@@ -8862,6 +9912,9 @@
       window.visualViewport.addEventListener("scroll", onVV);
     }
     window.addEventListener("resize", onVV);
+    if (window.matchMedia) {
+      window.matchMedia("(max-width: 860px)").addEventListener("change", syncGpsAvailability);
+    }
   }
 
 
@@ -8950,13 +10003,16 @@
     }
   }
 
-  /* ============================================================ "ESTOU AQUI" */
-  function startPlacingHere() {
+  /* ============================================================ "ESTOU AQUI" / MARCAR NO MAPA */
+  function startPlacingHere(which = "origin") {
     state.placingHere = true;
+    state.placingHereField = which === "dest" ? "dest" : "origin";
     closeSuggest();
     el.viewport.style.cursor = "crosshair";
     if (isMobileLayout()) setPanelOpen(false);
-    toast("Toque no mapa onde você está.");
+    toast(which === "dest"
+      ? "Toque no mapa onde você quer ir."
+      : "Toque no mapa onde você está.");
   }
 
   /** Snap “Estou aqui” para âncora de POI quando o clique cai na área do local (ex.: CF). */
@@ -8991,13 +10047,11 @@
     return best;
   }
 
-  function placeHere(p) {
-    const lvl = state.activeLevel || "L00";
-    // Clique no mapa de andar usa viewBox com offset (ex.: L01 y≈385+)
+  function snapMapPointToNavMesh(p, lvl) {
+    lvl = lvl || state.activeLevel || "L00";
     const maxSnap = lvl === "L00" ? 120 : 55;
     let snap = snapHereToPoiZone(p, lvl);
 
-    // 1) Nó amarelo do andar atual (limite curto = preciso)
     if (!snap && state.navGraph && globalThis.NearestGraphPoint?.findNearestValidNavNode) {
       const hit = NearestGraphPoint.findNearestValidNavNode(p, state.navGraph, {
         level: lvl,
@@ -9009,7 +10063,6 @@
       }
     }
 
-    // 2) Projeção na edge caminhável do andar (corredor entre nós)
     if (!snap && state.navGraph && globalThis.NearestGraphPoint?.findNearestWalkableEdge) {
       const edgeHit = NearestGraphPoint.findNearestWalkableEdge(p, state.navGraph, {
         level: lvl,
@@ -9029,7 +10082,6 @@
       }
     }
 
-    // 3) Fallback NavigationRouter (ainda com limite)
     if (!snap && state.navGraph && globalThis.NavigationRouter) {
       const nid = NavigationRouter.nearestNodeId(p, state.navGraph, { level: lvl });
       const node = nid && state.navGraph.nodesById.get(nid);
@@ -9039,7 +10091,6 @@
       }
     }
 
-    // 4) Malha SVG local (L00)
     if (!snap && lvl === "L00") {
       const routable = nearestRoutableNode(p, true, maxSnap) || nearestRoutableNode(p, false, maxSnap);
       snap = routable
@@ -9047,6 +10098,106 @@
         : null;
       if (snap?.id) attachNodeToMeshSafe(snap.id, true);
     }
+
+    return snap?.id ? snap : null;
+  }
+
+  function buildMapPickPoi(snap, clickPt, field) {
+    const lvl = state.activeLevel || "L00";
+    const mappedPoi = poiForNavNode(snap.id);
+    if (mappedPoi && field === "origin") {
+      applyInjectedPoiIcon(mappedPoi);
+      mappedPoi.anchor = snap.id;
+      mappedPoi.snap = { x: snap.x, y: snap.y };
+      mappedPoi.navNodeIds = [snap.id];
+      return mappedPoi;
+    }
+    if (snap.nearPoiId) {
+      const poi = (G.pois || []).find((p) => poiRawKey(p) === snap.nearPoiId && isSearchablePoi(p));
+      if (poi) {
+        applyInjectedPoiIcon(poi);
+        poi.anchor = snap.id;
+        poi.snap = { x: snap.x, y: snap.y };
+        poi.navNodeIds = [snap.id];
+        return poi;
+      }
+    }
+    const isDest = field === "dest";
+    const herePoi = {
+      id: "__here__",
+      name: isDest ? "Ponto no mapa" : "Estou aqui",
+      searchLabel: isDest ? "Chegar aqui (mapa)" : "Sair daqui (mapa)",
+      x: snap.x,
+      y: snap.y,
+      iconX: clickPt.x,
+      iconY: clickPt.y,
+      anchor: snap.id,
+      snap: { x: snap.x, y: snap.y },
+      nearPoiId: snap.nearPoiId || null,
+      cat: "acesso",
+      level: lvl,
+      navNodeIds: [snap.id],
+    };
+    if (!isDest) state.here = herePoi;
+    return herePoi;
+  }
+
+  let mapPickGeoCache = null;
+  async function geoForMapPick() {
+    if (mapPickGeoCache?.latLngToSvg) return mapPickGeoCache;
+    let data = null;
+    try {
+      const res = await fetch("data/geo-reference.json", { cache: "no-store" });
+      if (res.ok) data = await res.json();
+    } catch (_) {}
+    if (!data) return null;
+    mapPickGeoCache = globalThis.GeoTransform?.createFromGeoReference?.(data) || null;
+    return mapPickGeoCache;
+  }
+
+  async function resolveOriginForDestPick() {
+    if (!isGpsEnabled()) return null;
+    if (state.origin) return state.origin;
+    const nav = state.userLocation?.getNavigationState?.();
+    if (!nav?.gpsAvailable || nav.latitude == null || nav.longitude == null) return null;
+
+    const geo = await geoForMapPick();
+    const svgPt = geo?.latLngToSvg?.(nav.latitude, nav.longitude);
+    if (!svgPt) return null;
+
+    await ensureNavGraphForTrip("L00", state.activeLevel);
+    const snap = snapMapPointToNavMesh(svgPt, "L00");
+    if (!snap?.id) return null;
+
+    const herePoi = {
+      id: "__here__",
+      name: "Estou aqui (GPS)",
+      searchLabel: "Estou aqui (GPS)",
+      x: snap.x,
+      y: snap.y,
+      iconX: svgPt.x,
+      iconY: svgPt.y,
+      anchor: snap.id,
+      snap: { x: snap.x, y: snap.y },
+      cat: "acesso",
+      level: "L00",
+      navNodeIds: [snap.id],
+      gps: {
+        source: "GPS",
+        latitude: nav.latitude,
+        longitude: nav.longitude,
+        accuracy: nav.accuracy,
+      },
+    };
+    state.here = herePoi;
+    state.mapPickOrigin = { x: snap.x, y: snap.y };
+    return herePoi;
+  }
+
+  function placeHere(p) {
+    const field = state.placingHereField || "origin";
+    const lvl = state.activeLevel || "L00";
+    const snap = snapMapPointToNavMesh(p, lvl);
 
     if (!snap?.id) {
       toast("Toque mais perto de um corredor ou porta deste andar.");
@@ -9061,10 +10212,13 @@
         poi.snap = { x: snap.x, y: snap.y };
         poi.navNodeIds = [snap.id];
         state._ignoreNextPoiClick = true;
-        setField("origin", poi);
+        setField(field, poi);
         state.placingHere = false;
+        state.placingHereField = "origin";
         el.viewport.style.cursor = "";
-        toast(`${poi.searchLabel || poi.name} marcado como origem.`);
+        toast(field === "dest"
+          ? `${poi.searchLabel || poi.name} marcado como destino.`
+          : `${poi.searchLabel || poi.name} marcado como origem.`);
         return;
       }
     }
@@ -9076,17 +10230,20 @@
       mappedPoi.snap = { x: snap.x, y: snap.y };
       mappedPoi.navNodeIds = [snap.id];
       state._ignoreNextPoiClick = true;
-      setField("origin", mappedPoi);
+      setField(field, mappedPoi);
       state.placingHere = false;
+      state.placingHereField = "origin";
       el.viewport.style.cursor = "";
-      toast(`${mappedPoi.searchLabel || mappedPoi.name} marcado como origem.`);
+      toast(field === "dest"
+        ? `${mappedPoi.searchLabel || mappedPoi.name} marcado como destino.`
+        : `${mappedPoi.searchLabel || mappedPoi.name} marcado como origem.`);
       return;
     }
 
-    // Origem alinhada ao nó (rota precisa); clique só escolhe qual nó
-    state.here = {
+    const herePoi = {
       id: "__here__",
-      name: "Estou aqui",
+      name: field === "dest" ? "Marcar no mapa" : "Estou aqui",
+      searchLabel: field === "dest" ? "Marcar no mapa (destino)" : "Estou aqui (marcar no mapa)",
       x: snap.x,
       y: snap.y,
       iconX: p.x,
@@ -9098,8 +10255,9 @@
       level: lvl,
       navNodeIds: [snap.id],
     };
+    if (field === "origin") state.here = herePoi;
     state._ignoreNextPoiClick = true;
-    setField("origin", state.here);
+    setField(field, herePoi);
     // LP: ponto azul “hereMarker” permanece oculto
     if (el.hereMarker) {
       el.hereMarker.hidden = true;
@@ -9108,8 +10266,11 @@
       el.hereMarker.style.display = "none";
     }
     state.placingHere = false;
+    state.placingHereField = "origin";
     el.viewport.style.cursor = "";
-    toast("Posição marcada neste andar. Agora escolha o destino.");
+    toast(field === "dest"
+      ? "Destino marcado no mapa."
+      : "Posição marcada neste andar. Agora escolha o destino.");
   }
 
   /* ============================================================ PAN / ZOOM
@@ -9121,6 +10282,7 @@
     el,
     refreshRouteMarkerScales,
     mobileMapPadding,
+    onMapViewChanged: () => state._repositionMapPickMenu?.(),
   }) || {};
   const apply = mapCtrl.apply || function () {};
   const clamp = mapCtrl.clamp || function () {};
@@ -9128,6 +10290,7 @@
   const fitSoon = mapCtrl.fitSoon || function (fn) { requestAnimationFrame(() => requestAnimationFrame(fn || fit)); };
   const zoomAt = mapCtrl.zoomAt || function () {};
   const viewportPoint = mapCtrl.viewportPoint || function () { return { x: 0, y: 0 }; };
+  const svgPointToClient = mapCtrl.svgPointToClient || function () { return { x: 0, y: 0 }; };
 
   function fitToPoints(pts, opts = {}) {
     if (!pts?.length) return;
@@ -9203,52 +10366,16 @@
     return points.length >= 2 ? points : [];
   }
 
-  /** Enquadra a rota (preferência: trecho do andar ativo). */
-  function fitRouteInView(route, opts = {}) {
-    const mobile = innerWidth <= 860;
-    const fillWidth = opts.fillWidth ?? mobile;
-    let pts = ensureActiveFloorRoutePoints().filter((p) => p && isFinite(p.x) && isFinite(p.y));
-    if (pts.length < 2 && opts.preferActiveLeg !== false) {
-      pts = activeLegPoints(route);
-    }
-    const oLvl = poiLevel(state.origin);
-    const dLvl = poiLevel(state.dest);
-    if (pts.length < 2 && oLvl === dLvl && oLvl === state.activeLevel) {
-      pts = (route?.points || []).filter((p) => p && isFinite(p.x) && isFinite(p.y));
-    }
-    if (pts.length >= 1) {
-      const extras = [];
-      if (state.origin?.snap && (!state.origin.level || poiLevel(state.origin) === state.activeLevel)) {
-        extras.push(state.origin.snap);
-      } else if (state.origin && isFinite(state.origin.x) && poiLevel(state.origin) === state.activeLevel) {
-        extras.push(state.origin);
-      }
-      if (state.dest?.snap && (!state.dest.level || poiLevel(state.dest) === state.activeLevel)) {
-        extras.push(state.dest.snap);
-      } else if (state.dest && isFinite(state.dest.x) && poiLevel(state.dest) === state.activeLevel) {
-        extras.push(state.dest);
-      }
-      fitToPoints(pts.concat(extras), { ...opts, fillWidth });
-      return;
-    }
-    const leg = (route?.legs || []).find((l) => l.level === state.activeLevel) || route?.legs?.[0];
-    if (leg?.points?.length) fitToPoints(leg.points, { ...opts, fillWidth });
+  /** Mantém o mapa completo centralizado; a rota permanece visível no andar ativo. */
+  function fitRouteInView(_route, _opts = {}) {
+    syncNavLayoutMetrics();
+    fit();
   }
 
-  /** Zoom no trecho atual da navegação (com olhar um pouco à frente). */
+  /** Navegação passo a passo: mesmo enquadramento do mapa completo. */
   function fitNavSegment() {
-    const p = navViewPoints();
-    if (!p || p.length < 2) return;
-    const total = p.length - 1;
-    const i = Math.max(0, Math.min(state.navIdx, total - 1));
-    const ahead = Math.min(p.length - 1, i + 3);
-    const pts = p.slice(i, ahead + 1);
-    if (pts.length < 2 && p[i + 1]) pts.push(p[i + 1]);
-    fitToPoints(pts, {
-      navMode: true,
-      minSpan: innerWidth <= 860 ? 56 : 48,
-      fillWidth: innerWidth <= 860,
-    });
+    syncNavLayoutMetrics();
+    fit();
   }
 
 
@@ -9305,7 +10432,7 @@
     state.routePickOpen = false;
     state.userLocation?.setFollowMode?.("off");
     state.userLocation?.hidePuck?.();
-    if (state.origin?.id === "__here__") {
+    if (isGpsEnabled() && state.origin?.id === "__here__") {
       state.userLocation?.setFollowMode?.("follow");
       state.userLocation?.startFollowing?.().catch(() => {
         state.userLocation?.start?.({ silent: true });
@@ -9689,6 +10816,7 @@
       el.svgHost.classList.add("svg-host--floor");
       const meta = state.floorMeta[floor.id];
       setMapViewBox(meta.vbW, meta.vbH, meta.vbX || 0, meta.vbY || 0);
+      ensureRouteLayer(svg);
       if (state.route) {
         syncMapViewBeforeRoutePaint();
         rebuildRouteLegs(state.route);
@@ -10195,6 +11323,27 @@
     }
 
     // pan / zoom — ignora cliques em controles do mapa
+    let mapPickCtrl = null;
+    if (globalThis.PIBMapPickController) {
+      mapPickCtrl = globalThis.PIBMapPickController.create({
+        el,
+        state,
+        toast,
+        viewportPoint,
+        mapPointToClient: svgPointToClient,
+        snapMapPoint: (p) => snapMapPointToNavMesh(p, state.activeLevel || "L00"),
+        buildMapPickPoi,
+        setField,
+        drawRoute,
+        resolveOriginForDestPick,
+        paintMapPickMarkers,
+        isMobileLayout,
+        setPanelOpen,
+      });
+      mapPickCtrl.bind();
+      state._repositionMapPickMenu = () => mapPickCtrl.repositionMenu?.();
+    }
+
     el.viewport.addEventListener("wheel", (e) => {
       e.preventDefault();
       const r = el.viewport.getBoundingClientRect();
@@ -10202,7 +11351,7 @@
     }, { passive: false });
 
     el.viewport.addEventListener("pointerdown", (e) => {
-      if (e.target.closest("button, a, input, .map-marker")) return;
+      if (e.target.closest("button, a, input, .map-marker, .map-pick-menu, [data-poi]")) return;
       if (state.calibMode) {
         e.preventDefault();
         const p = viewportPoint(e);
@@ -10248,14 +11397,23 @@
       el.viewport.classList.remove("dragging");
       try { el.viewport.releasePointerCapture(e.pointerId); } catch {}
     };
-    el.viewport.addEventListener("pointerup", endDrag);
+
+    // pinch (touch) — declarado antes do pointerup para distinguir toque de zoom
+    let pinch = null;
+    let pinching = false;
+
+    el.viewport.addEventListener("pointerup", (e) => {
+      const wasTap = state.drag && !state.moved && !pinching;
+      endDrag(e);
+      if (wasTap) mapPickCtrl?.onMapTap?.(e);
+    });
     el.viewport.addEventListener("pointercancel", endDrag);
 
-    // pinch (touch)
-    let pinch = null;
     el.viewport.addEventListener("touchmove", (e) => {
       if (e.touches.length === 2) {
         e.preventDefault();
+        pinching = true;
+        mapPickCtrl?.setPinching?.(true);
         const [a, b] = e.touches;
         const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
         const mid = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
@@ -10264,7 +11422,11 @@
         pinch = d;
       }
     }, { passive: false });
-    el.viewport.addEventListener("touchend", () => { pinch = null; });
+    el.viewport.addEventListener("touchend", () => {
+      pinch = null;
+      pinching = false;
+      mapPickCtrl?.setPinching?.(false);
+    });
 
     addEventListener("keydown", (e) => {
       if (e.key === "Escape" && el.navOverlay.classList.contains("is-open")) exitNav();

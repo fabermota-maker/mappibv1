@@ -236,7 +236,30 @@
                 <use href="#pibNavArrow"/>
               </g>
             </g>
+            <g id="mapPickPinPreview" class="map-pick-marker map-pick-marker--preview" hidden visibility="hidden">
+              <circle class="map-pick-marker__ring" cx="0" cy="0" r="10"/>
+              <circle class="map-pick-marker__dot" cx="0" cy="0" r="4"/>
+            </g>
+            <g id="mapPickPinOrigin" class="map-pick-marker map-pick-marker--origin" hidden visibility="hidden">
+              <circle class="map-pick-marker__ring" cx="0" cy="0" r="10"/>
+              <circle class="map-pick-marker__dot" cx="0" cy="0" r="4"/>
+            </g>
+            <g id="mapPickPinDest" class="map-pick-marker map-pick-marker--dest" hidden visibility="hidden">
+              <circle class="map-pick-marker__ring" cx="0" cy="0" r="10"/>
+              <circle class="map-pick-marker__dot" cx="0" cy="0" r="4"/>
+            </g>
           </svg>
+        </div>
+      </div>
+
+      <div class="map-pick-menu" id="mapPickMenu" hidden role="dialog" aria-label="Origem ou destino no mapa">
+        <div class="map-pick-menu__actions" id="mapPickActions">
+          <button type="button" class="map-pick-menu__btn map-pick-menu__btn--origin" id="mapPickBtnOrigin">Sair daqui</button>
+          <button type="button" class="map-pick-menu__btn map-pick-menu__btn--dest" id="mapPickBtnDest">Chegar aqui</button>
+        </div>
+        <div class="map-pick-menu__loading" id="mapPickLoading" hidden aria-live="polite">
+          <span class="map-pick-menu__spinner" aria-hidden="true"></span>
+          <span>Calculando rota…</span>
         </div>
       </div>
 

@@ -42,6 +42,7 @@
       }
       ctx.refreshRouteMarkerScales?.();
       state.userLocation?.refreshPuckScale?.();
+      ctx.onMapViewChanged?.();
     }
 
     function clamp() {
@@ -98,7 +99,16 @@
       return { x, y };
     }
 
-    return { apply, clamp, fit, fitSoon, zoomAt, viewportPoint };
+    /** Converte ponto SVG do mapa → coordenadas de tela (client). */
+    function svgPointToClient(svgX, svgY) {
+      const r = el.viewport.getBoundingClientRect();
+      return {
+        x: r.left + state.panX + (svgX - (G.vbX || 0)) * state.scale,
+        y: r.top + state.panY + (svgY - (G.vbY || 0)) * state.scale,
+      };
+    }
+
+    return { apply, clamp, fit, fitSoon, zoomAt, viewportPoint, svgPointToClient };
   }
 
   global.PIBMapMapController = { create };

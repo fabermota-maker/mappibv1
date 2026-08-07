@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "288",
+    appBuild: "317",
     showAllInfoTexts: true,
     /** URL com cache-bust automático (usa appBuild). */
     appAssetUrl(path) {
@@ -160,6 +160,27 @@
       "P000E4_entrada_lateral_02_templo",
       "P000E5_entrada_01_principal_templo",
     ],
+    /** POI oculto no mapa, mas pesquisável (origem/destino). */
+    hiddenSearchPois: [
+      {
+        rawId: "L00_bebedouro_escadas",
+        name: "Bebedouro",
+        searchLabel: "Bebedouro | entrada",
+        anchor: "L00_node_0028",
+        iconCampus: { x: 613.63, y: 588.86 },
+        level: "L00",
+        cat: "apoio",
+      },
+      {
+        rawId: "L00_bebedouro_abasc",
+        name: "Bebedouro",
+        searchLabel: "Bebedouro | recepção",
+        anchor: "L00_node_0065",
+        iconCampus: { x: 658, y: 556.25 },
+        level: "L00",
+        cat: "apoio",
+      },
+    ],
     /** POI oculto (sem ícone) — só ancora a direção da rota na malha oficial. */
     hiddenRoutePois: [
       {
@@ -214,6 +235,8 @@
       P026_elevador_ginasio: "L00_node_0063_min_esporte",
       P027_elevador_templo: "L00_node_0081_elevador_t",
       L00_escadas_laterais_t: "L00_node_0079_escada_lateral_",
+      L00_bebedouro_escadas: "L00_node_0028",
+      L00_bebedouro_abasc: "L00_node_0065",
       "gfr-escadaLateral": "L00_node_0079_escada_lateral_",
       escada_mesanino_01: "L00_node_0089_escada_mesanino_01",
       escada_mesanino_02: "L00_node_0066_escada_mesanino_02",
@@ -237,6 +260,8 @@
       P020_espaco_servir: "Espaço Servir",
       P010_espaco_conexao: "Espaço conexão",
       P000E1_entrada_lateral_01_templo: "Entrada lateral 01 templo",
+      L00_bebedouro_escadas: "Bebedouro | entrada",
+      L00_bebedouro_abasc: "Bebedouro | recepção",
       escada_mesanino_01: "Mezanino 1",
       escada_mesanino_02: "Mezanino 2",
       min_esportes: "Min. esportes",
@@ -265,6 +290,8 @@
       P027_elevador_templo: ["elevador t", "elevadores t", "elevador templo", "elevadores templo"],
       L00_escadas_laterais_t: ["escada lateral", "escadas laterais", "escadas laterais t", "escada lateral t"],
       "gfr-escadaLateral": ["escada lateral", "escadas laterais", "escadas laterais t", "escada lateral t"],
+      L00_bebedouro_escadas: ["bebedouro", "bebedouduro", "agua", "água", "agua potavel", "água potável"],
+      L00_bebedouro_abasc: ["bebedouro", "bebedouduro", "agua", "água", "agua potavel", "água potável"],
     },
     // limita opções de rota em pares específicos (evita desvios absurdos no grafo)
     routeOptionCaps: [
@@ -303,7 +330,96 @@
         b: ["P010_espaco_conexao"],
         max: 2,
       },
+      {
+        a: ["P002_capela", "P013_recepcao", "P010_espaco_conexao", "P016_jardim", "P000_templo"],
+        b: ["P005_centro_de_formacao"],
+        max: 3,
+      },
+      {
+        a: ["P005_centro_de_formacao", "P004_sala_de_oracao_RGO"],
+        b: ["P002_capela", "P027_elevador_templo", "L00_escadas_laterais_t", "P010_espaco_conexao"],
+        max: 3,
+      },
     ],
+    /**
+     * Rotas L00 entre extremos do terreno (CF/RGO ↔ hall/conexão/elevador).
+     * Adiciona alternativa “Pela área interna do térreo” (corredor conexão Templo/Jardim).
+     */
+    l00InteriorTerrain: {
+      label: "Pela área interna do térreo",
+      northKeys: [
+        "P005_centro_de_formacao",
+        "P004_sala_de_oracao_RGO",
+        "P006_estacionamento_02",
+      ],
+      southKeys: [
+        "P002_capela",
+        "P027_elevador_templo",
+        "L00_escadas_laterais_t",
+        "P010_espaco_conexao",
+        "P013_recepcao",
+        "P000_templo",
+        "P011_bercario",
+        "P012_sala_de_oracao_cleusa",
+        "P009_livraria_evangelica",
+        "P017_espaco_acolher_ceara",
+        "P019_banheiro_familia",
+        "escada_mesanino_01",
+        "escada_mesanino_02",
+      ],
+      westKeys: ["P016_jardim", "P020_espaco_servir"],
+      northToSouthVia: [
+        "L00_node_0043",
+        "L00_node_0040",
+        "L00_node_0039",
+        "L00_node_0086_entrada_av_batel_02",
+        "L00_node_0085",
+        "L00_node_0083",
+        "L00_node_0082_espaco_conexao",
+        "L00_node_0084",
+        "L00_node_0077",
+        "L00_node_0073",
+      ],
+      southToNorthVia: [
+        "L00_node_0073",
+        "L00_node_0077",
+        "L00_node_0084",
+        "L00_node_0082_espaco_conexao",
+        "L00_node_0083",
+        "L00_node_0085",
+        "L00_node_0086_entrada_av_batel_02",
+        "L00_node_0039",
+        "L00_node_0040",
+        "L00_node_0043",
+      ],
+      westToNorthVia: [
+        "L00_node_0085",
+        "L00_node_0083",
+        "L00_node_0082_espaco_conexao",
+        "L00_node_0086_entrada_av_batel_02",
+        "L00_node_0039",
+        "L00_node_0040",
+        "L00_node_0043",
+      ],
+      westToSouthVia: [
+        "L00_node_0085",
+        "L00_node_0083",
+        "L00_node_0082_espaco_conexao",
+        "L00_node_0084",
+        "L00_node_0077",
+        "L00_node_0073",
+      ],
+      northEndNodes: ["L00_node_0042_cf", "L00_node_0045_rgo"],
+      southEndNodes: [
+        "L00_node_0081_elevador_t",
+        "L00_node_0079_escada_lateral_",
+        "L00_node_0068_capela",
+        "L00_node_0082_espaco_conexao",
+        "L00_node_0029_recepcao",
+      ],
+      westEndNodes: ["L00_node_0037_jardim", "L00_node_0035_espaco_servir"],
+      slot: 1,
+    },
     // centro visual (planta local ADM) → pin de origem/destino nos andares internos
     poiIconLocal: {
       L04_poi_0016: { x: 82, y: 118 },
@@ -537,6 +653,62 @@
         allowParking: true,
         slot: 2,
       },
+      // L00 → CF / Salas Start 10–12: corredor interno do estabelecimento (hall + oeste)
+      {
+        a: [
+          "P002_capela",
+          "P013_recepcao",
+          "P010_espaco_conexao",
+          "P011_bercario",
+          "P012_sala_de_oracao_cleusa",
+          "P017_espaco_acolher_ceara",
+          "P019_banheiro_familia",
+          "P027_elevador_templo",
+          "P000_templo",
+          "P001_entrada_principal_toldo",
+          "P007_area_kids",
+          "P007T_area_kids_t",
+          "P008_refeitorio_externo",
+          "P009_livraria_evangelica",
+          "P014_seven_pass",
+          "P015_bazar_abasc",
+          "P018_abasc",
+          "P025_banheiro_masculino_feminino",
+          "P021_banheiro_feminino_ginasio",
+          "P022_banheiro_masculino_ginasio",
+          "P026_elevador_ginasio",
+          "escada_mesanino_01",
+          "escada_mesanino_02",
+        ],
+        b: ["P005_centro_de_formacao"],
+        via: [
+          "L00_node_0073",
+          "L00_node_0077",
+          "L00_node_0085",
+          "L00_node_0040",
+          "L00_node_0043",
+        ],
+        endNodes: ["L00_node_0042_cf"],
+        label: "Pelo corredor do estabelecimento",
+        avoidParking: false,
+        allowParking: true,
+        slot: 1,
+      },
+      // Jardim / oeste → CF: corredor oeste do estabelecimento
+      {
+        a: ["P016_jardim", "P020_espaco_servir", "P003_estacionamento_01", "P006_estacionamento_02"],
+        b: ["P005_centro_de_formacao"],
+        via: [
+          "L00_node_0085",
+          "L00_node_0040",
+          "L00_node_0043",
+        ],
+        endNodes: ["L00_node_0042_cf"],
+        label: "Corredor oeste · CF",
+        avoidParking: false,
+        allowParking: true,
+        slot: 2,
+      },
       // Estacionamento conveniado → Templo: lateral Av. Batel (sem desvio pelo CF)
       {
         a: ["P003_estacionamento_01"],
@@ -664,6 +836,26 @@
       "B02_entrada_narnia_map",
       "P028_B02_entrada_narnia",
     ],
+    /** B1 → B2: sempre pelo Encomun (escada azul no mapa B1). */
+    encomunTransfer: {
+      B01: {
+        nodeId: "B01_node_0007_acesso_encomun_b02",
+        label: "Encomun",
+        gateIcon: { x: 312.15, y: 186.15 },
+      },
+      B02: {
+        nodeId: "B02_node_0012_comunicacao_encomun",
+        label: "Encomun",
+      },
+      b01BridgeNode: "B01_node_0006_conexao_templo_batisterio",
+      b02BridgeNode: "B02_node_0008_conexao_templo_batisterio",
+      verticalEdgeId: "B01_B02_E_batisterio",
+    },
+    /** B2 → Espaço Servir no T: corredor oeste após sair pela Nárnia no Térreo. */
+    basementServirL00Via: [
+      "L00_node_0033_corredor_servir",
+      "L00_node_0036",
+    ],
     /** Atalhos B01↔B02 / B01↔L00 que não passam pela entrada de Nárnia no T. */
     narniaForbiddenEdges: [
       "B01_B02_E_acesso_servir",
@@ -705,7 +897,44 @@
       { id: "auditorios", label: "Auditórios" },
       { id: "banheiros", label: "Banheiros" },
       { id: "elevadores", label: "Elevadores" },
+      { id: "emergencia", label: "Emergência" },
     ],
+    /** Busca “start” / “criança” → faixas etárias + elevador e escadas laterais (T). */
+    startKidsSearch: {
+      triggers: ["start", "salas start", "crianca", "criança", "criancas", "crianças", "bercario", "berçário", "infantil"],
+      hint: "Use o elevador ou as escadas laterais no Hall do Templo (T) para chegar ao andar indicado.",
+      ageBands: [
+        {
+          id: "startkids-2-7",
+          label: "Salas Start (2 a 7 anos)",
+          floorTag: "L1",
+          destRawId: "L01_poi_0024",
+          level: "L01",
+          mapLevel: "L01",
+        },
+        {
+          id: "startkids-8-9",
+          label: "Salas Start (8 a 9 anos)",
+          floorTag: "L4",
+          destRawId: "L04_poi_0017_espaco_brincar",
+          level: "L04",
+          mapLevel: "L04",
+        },
+        {
+          id: "startkids-10-12",
+          label: "Salas Start (10 a 12 anos)",
+          floorTag: "CF",
+          destRawId: "P005_centro_de_formacao",
+          level: "L00",
+          mapLevel: "L00",
+          meta: "CF · Centro de Formação",
+        },
+      ],
+      transitHubs: [
+        { rawId: "P027_elevador_templo", label: "Elevadores T" },
+        { rawId: "L00_escadas_laterais_t", label: "Escadas laterais T" },
+      ],
+    },
     /** UI: L00→T, L01→L1, B01→B1 */
     formatFloorTag(levelId) {
       const id = String(levelId || "").trim();

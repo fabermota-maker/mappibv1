@@ -25,6 +25,7 @@
     "js/app/poiController.js",
     "js/app/routeController.js",
     "js/app/interfaceController.js",
+    "js/app/mapPickController.js",
     "js/geo-transform.js",
     "js/pib-curitiba-location-config.js",
     "js/geofence-service.js",

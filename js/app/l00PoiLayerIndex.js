@@ -57,7 +57,7 @@
     },
     banheiro_familia: {
       displayName: "Banheiro Família e Bebês",
-      aliases: ["banheiro familia", "banheiro família", "banheiro bebes", "bercario start"],
+      aliases: ["banheiro familia", "banheiro família", "banheiro bebes", "bercario bebe"],
     },
     abasc: {
       displayName: "ABASC",
