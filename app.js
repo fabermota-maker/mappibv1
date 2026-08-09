@@ -60,6 +60,7 @@
     app: $("app"), panel: $("panel"), panelToggle: $("panelToggle"),
     originInput: $("originInput"), destInput: $("destInput"),
     originList: $("originList"), destList: $("destList"),
+    virtualKeyboard: $("virtualKeyboard"),
     swapBtn: $("swapBtn"), hereBtn: $("hereBtn"), routeBtn: $("routeBtn"),
     summary: $("summary"), summaryDist: $("summaryDist"), summaryMeta: $("summaryMeta"),
     summaryTime: $("summaryTime"),
@@ -9646,6 +9647,7 @@
       : (poi.searchLabel || poi.name);
     input.value = displayLabel;
     closeSuggest();
+    closeVirtualKeyboard();
     exitMobileSearchMode();
     input.blur();
     highlightSelected();
@@ -9840,6 +9842,141 @@
 
   function closeSuggest() { el.originList.hidden = true; el.destList.hidden = true; }
 
+  /* ============================================================ TECLADO VIRTUAL
+     Só no desktop. Alimenta os inputs de origem/destino existentes disparando os
+     mesmos eventos da digitação física — autocomplete, POI/node e rota inalterados. */
+  const VK_DESKTOP_QUERY = "(min-width: 1024px)";
+  let activeSearchInput = null;
+
+  function vkIsDesktop() {
+    if (window.matchMedia) return window.matchMedia(VK_DESKTOP_QUERY).matches;
+    return window.innerWidth >= 1024;
+  }
+
+  function vkFieldOf(input) {
+    return input && input.id === "destInput" ? "dest" : "origin";
+  }
+
+  /** Centraliza o teclado na área do mapa — o painel lateral desloca o centro da viewport. */
+  function syncVirtualKeyboardCenter() {
+    if (!el.stage) return;
+    const r = el.stage.getBoundingClientRect();
+    if (!r.width) return;
+    document.documentElement.style.setProperty("--vk-center-x", `${Math.round(r.left + r.width / 2)}px`);
+  }
+
+  function openVirtualKeyboard(input) {
+    if (!el.virtualKeyboard || !input || !vkIsDesktop()) return;
+    if (input.hasAttribute("readonly") || input.disabled) return;
+    activeSearchInput = input;
+    syncVirtualKeyboardCenter();
+    el.virtualKeyboard.hidden = false;
+    el.virtualKeyboard.setAttribute("aria-hidden", "false");
+  }
+
+  function closeVirtualKeyboard() {
+    activeSearchInput = null;
+    if (!el.virtualKeyboard) return;
+    el.virtualKeyboard.hidden = true;
+    el.virtualKeyboard.setAttribute("aria-hidden", "true");
+  }
+
+  function vkEmitInput(input, inputType) {
+    let ev;
+    try {
+      ev = new InputEvent("input", { bubbles: true, inputType });
+    } catch (_) {
+      ev = new Event("input", { bubbles: true });
+    }
+    input.dispatchEvent(ev);
+  }
+
+  function vkCaret(input) {
+    const len = input.value.length;
+    const start = typeof input.selectionStart === "number" ? input.selectionStart : len;
+    const end = typeof input.selectionEnd === "number" ? input.selectionEnd : len;
+    return { start: Math.min(start, len), end: Math.min(end, len) };
+  }
+
+  function vkSetCaret(input, pos) {
+    try { input.setSelectionRange(pos, pos); } catch (_) {}
+  }
+
+  function vkInsertText(text) {
+    const input = activeSearchInput;
+    if (!input) return;
+    const { start, end } = vkCaret(input);
+    input.value = input.value.slice(0, start) + text + input.value.slice(end);
+    vkSetCaret(input, start + text.length);
+    vkEmitInput(input, "insertText");
+  }
+
+  function vkDeleteBackward() {
+    const input = activeSearchInput;
+    if (!input) return;
+    const { start, end } = vkCaret(input);
+    if (start !== end) {
+      input.value = input.value.slice(0, start) + input.value.slice(end);
+      vkSetCaret(input, start);
+    } else {
+      if (!start) return;
+      input.value = input.value.slice(0, start - 1) + input.value.slice(start);
+      vkSetCaret(input, start - 1);
+    }
+    vkEmitInput(input, "deleteContentBackward");
+  }
+
+  /** Buscar: resolve o melhor POI pela mesma busca do autocomplete e confirma o campo. */
+  function vkCommitSearch() {
+    const input = activeSearchInput;
+    if (!input) return;
+    const which = vkFieldOf(input);
+    const query = String(input.value || "").trim();
+    closeVirtualKeyboard();
+    if (!state[which] && query) {
+      const best = filterPoisForSearch(query)[0];
+      // setField já grava POI/node, fecha sugestões e traça a rota quando há origem+destino
+      if (best) { setField(which, best); return; }
+    }
+    closeSuggest();
+    input.blur();
+    if (state.origin && state.dest) drawRoute();
+  }
+
+  function initVirtualKeyboard() {
+    const kb = el.virtualKeyboard;
+    if (!kb) return;
+
+    // teclas não podem roubar o foco do input ativo
+    const keepFocus = (e) => { if (e.target.closest("button")) e.preventDefault(); };
+    kb.addEventListener("pointerdown", keepFocus);
+    kb.addEventListener("mousedown", keepFocus);
+
+    kb.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn || !kb.contains(btn)) return;
+      e.preventDefault();
+      if (!activeSearchInput) return;
+      if (btn.classList.contains("search")) { vkCommitSearch(); return; }
+      if (btn.classList.contains("back")) { vkDeleteBackward(); return; }
+      if (btn.classList.contains("space")) { vkInsertText(" "); return; }
+      const key = (btn.textContent || "").trim();
+      if (key) vkInsertText(key);
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && activeSearchInput) closeVirtualKeyboard();
+    });
+
+    syncVirtualKeyboardCenter();
+    window.addEventListener("resize", syncVirtualKeyboardCenter);
+
+    if (window.matchMedia) {
+      const mq = window.matchMedia(VK_DESKTOP_QUERY);
+      mq.addEventListener?.("change", (ev) => { if (!ev.matches) closeVirtualKeyboard(); });
+    }
+  }
+
   /* ---- Mobile: painel no topo quando o teclado abre ---- */
   let mobileSearchExitTimer = null;
 
@@ -10008,6 +10145,7 @@
     state.placingHere = true;
     state.placingHereField = which === "dest" ? "dest" : "origin";
     closeSuggest();
+    closeVirtualKeyboard();
     el.viewport.style.cursor = "crosshair";
     if (isMobileLayout()) setPanelOpen(false);
     toast(which === "dest"
@@ -11197,10 +11335,13 @@
       input.setAttribute("spellcheck", "false");
       input.addEventListener("focus", () => {
         enterMobileSearchMode();
+        openVirtualKeyboard(input);
         withSearchInputCaret(input, () => {
           renderSuggest(input.id === "originInput" ? "origin" : "dest", input.value);
         });
       });
+      // clique direto no campo reabre o teclado (o foco pode já estar nele)
+      input.addEventListener("click", () => openVirtualKeyboard(input));
       input.addEventListener("input", (e) => {
         const which = input.id === "originInput" ? "origin" : "dest";
         state[which] = null;
@@ -11208,14 +11349,25 @@
         else updateNavBtn();
         withSearchInputCaret(input, () => renderSuggest(which, input.value), e);
       });
-      input.addEventListener("blur", () => scheduleExitMobileSearchMode());
+      input.addEventListener("blur", () => {
+        scheduleExitMobileSearchMode();
+        setTimeout(() => {
+          const active = document.activeElement;
+          if (active === el.originInput || active === el.destInput) return;
+          if (active && el.virtualKeyboard?.contains(active)) return;
+          closeVirtualKeyboard();
+        }, 120);
+      });
     }
     initSearchField(el.originInput);
     initSearchField(el.destInput);
+    initVirtualKeyboard();
     document.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".virtual-keyboard")) return;
       if (!e.target.closest(".field") && !e.target.closest(".suggest") && !e.target.closest("#browseBar")) {
         closeSuggest();
         exitMobileSearchMode();
+        closeVirtualKeyboard();
       }
     });
 
