@@ -3536,6 +3536,32 @@
       (matchSide(r.a, a) && matchSide(r.b, b)) ||
       (matchSide(r.a, b) && matchSide(r.b, a))
     );
+    // Alternativa obrigatória para chegadas no CF, RGO ou estacionamento
+    // conveniado: corredor interno → lado oeste → estacionamento. É oferecida
+    // somente para partidas no térreo e usa exclusivamente nós da malha oficial.
+    const westParkingDestinations = new Set([
+      "P005_centro_de_formacao",
+      "P004_sala_de_oracao_RGO",
+      "P003_estacionamento_01",
+    ]);
+    if (poiLevel(origin) === "L00" && westParkingDestinations.has(b) && a !== b) {
+      matched.push({
+        via: [
+          "L00_node_0073",
+          "L00_node_0077",
+          "L00_node_0085",
+          "L00_node_0040",
+          "L00_node_0043",
+          "L00_node_0044",
+          "L00_node_0046",
+          "L00_node_0048",
+        ],
+        label: "Corredor interno · oeste e estacionamento",
+        avoidParking: false,
+        allowParking: true,
+        slot: 5,
+      });
+    }
     // Se envolve elevador/templo/mezanino e ainda não há "pelo jardim", força a opção
     if ((isTempleHubPoi(origin) || isTempleHubPoi(dest))
       && !matched.some((r) => /pelo jardim|fora do templo/i.test(r.label || ""))) {
@@ -10495,20 +10521,32 @@
       `<button type="button" class="room-modal__floor ${floor.id === selectedFloor ? "is-active" : ""}"
         data-room-floor="${floor.id}" role="tab" aria-selected="${floor.id === selectedFloor}">${formatFloorTag(floor.id)}</button>`
     ).join("");
-    const rooms = roomModalPoisForFloor(selectedFloor).filter((poi) => {
+    // Sem texto, mantém a grade do andar escolhido. Ao pesquisar, consulta
+    // todo o campus para encontrar áreas e salas em qualquer andar.
+    const searchablePois = query
+      ? [
+        ...floors.flatMap((floor) => roomModalPoisForFloor(floor.id)),
+        // Destinos oficiais do térreo que são criados a partir do grafo
+        // (por exemplo Jardim) também participam da busca do modal.
+        ...(gfr()?.search(query, state.navGraph, G.nodes, G.adj)?.items || []),
+      ]
+      : roomModalPoisForFloor(selectedFloor);
+    const rooms = searchablePois.filter((poi) => {
       if (!query) return true;
       return poiSearchScore(poi, query, query) > 0;
     });
     if (!rooms.length) {
-      el.roomModalRooms.innerHTML = `<p class="room-modal__empty">Nenhum local encontrado neste andar.</p>`;
+      el.roomModalRooms.innerHTML = `<p class="room-modal__empty">Nenhum local encontrado.</p>`;
     } else {
       el.roomModalRooms.innerHTML = rooms.map((poi) => {
         const isOrigin = state.roomModalOrigin?.id === poi.id;
         const isDest = state.roomModalDest?.id === poi.id;
         const role = isOrigin ? "is-origin" : (isDest ? "is-destination" : "");
         const selectionLabel = isOrigin ? "Local de partida" : (isDest ? "Local de destino" : "Selecionar local");
+        const label = poi.searchLabel || poi.name;
+        const displayLabel = query ? `${label} · ${formatFloorTag(poiDisplayLevel(poi))}` : label;
         return `<button type="button" class="room-modal__room ${role}"
-          data-room-id="${poi.id}" aria-selected="${isOrigin || isDest}" aria-label="${selectionLabel}: ${poi.searchLabel || poi.name}">${poi.searchLabel || poi.name}</button>`;
+          data-room-id="${poi.id}" aria-selected="${isOrigin || isDest}" aria-label="${selectionLabel}: ${displayLabel}">${displayLabel}</button>`;
       }).join("");
     }
     el.roomModalFloors.querySelectorAll("[data-room-floor]").forEach((btn) => {
@@ -11825,6 +11863,9 @@
   function bind() {
     initRouteAnimationLayers();
     syncMapToolsPlacement();
+    // Impede o menu nativo acionado por clique direito ou toque prolongado,
+    // preservando os eventos normais de clique/toque da LP.
+    document.addEventListener("contextmenu", (e) => e.preventDefault());
     if (el.themeBtn) el.themeBtn.addEventListener("click", (e) => { e.preventDefault(); toggleTheme(); });
     if (el.areaBtn) {
       el.areaBtn.addEventListener("click", (e) => {
