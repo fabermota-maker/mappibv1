@@ -2207,10 +2207,55 @@ body.is-navigating .nav-overlay .compass {
   justify-content: center;
 }
 
-/* SOMENTE DESKTOP — em mobile/tablet vale o teclado nativo */
-
+/* Versão compacta do teclado virtual para tablet e celular. */
 @media (max-width: 1023px) {
   .virtual-keyboard {
-    display: none !important;
+    width: min(440px, calc(100% - 16px));
+    bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    padding: 10px;
+    border-radius: 18px;
+  }
+  .keyboard-layout {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .row,
+  .actions,
+  .numeric-row {
+    gap: 5px;
+  }
+  .row {
+    margin-bottom: 5px;
+  }
+  .row2 {
+    padding-left: 17px;
+    padding-right: 17px;
+  }
+  .row3 {
+    padding-left: 46px;
+    padding-right: 46px;
+  }
+  .virtual-keyboard button {
+    width: 34px;
+    height: 34px;
+    font-size: 11px;
+  }
+  .numeric-keyboard {
+    flex-direction: row;
+    gap: 5px;
+  }
+  .numeric-row {
+    flex-direction: column;
+  }
+  .numeric-row:last-child {
+    justify-content: flex-start;
+  }
+  .actions .space,
+  .actions .search {
+    width: 82px;
+    border-radius: 17px;
+  }
+  .actions .back {
+    border-radius: 17px;
   }
 }

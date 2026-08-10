@@ -10238,23 +10238,18 @@
   function closeSuggest() { el.originList.hidden = true; el.destList.hidden = true; }
 
   /* ============================================================ TECLADO VIRTUAL
-     Só no desktop. Alimenta os inputs de origem/destino existentes disparando os
-     mesmos eventos da digitação física — autocomplete, POI/node e rota inalterados. */
-  const VK_DESKTOP_QUERY = "(min-width: 1024px)";
+     Usado em todos os dispositivos. Alimenta os campos de busca existentes
+     disparando os mesmos eventos da digitação física — autocomplete, POI/node
+     e rota inalterados, sem abrir o teclado do sistema operacional. */
   let activeSearchInput = null;
 
-  function vkIsDesktop() {
-    if (window.matchMedia) return window.matchMedia(VK_DESKTOP_QUERY).matches;
-    return window.innerWidth >= 1024;
-  }
-
   function vkFieldOf(input) {
+    if (input?.id === "roomModalSearch") return "room";
     return input && input.id === "destInput" ? "dest" : "origin";
   }
 
   function openVirtualKeyboard(input) {
-    if (!el.virtualKeyboard || !input || !vkIsDesktop()) return;
-    if (input.hasAttribute("readonly") || input.disabled) return;
+    if (!el.virtualKeyboard || !input || input.disabled) return;
     activeSearchInput = input;
     el.virtualKeyboard.hidden = false;
     el.virtualKeyboard.setAttribute("aria-hidden", "false");
@@ -10319,6 +10314,11 @@
     const which = vkFieldOf(input);
     const query = String(input.value || "").trim();
     closeVirtualKeyboard();
+    if (which === "room") {
+      renderRoomModal();
+      input.blur();
+      return;
+    }
     if (!state[which] && query) {
       const best = filterPoisForSearch(query)[0];
       // setField já grava POI/node, fecha sugestões e traça a rota quando há origem+destino
@@ -10354,10 +10354,6 @@
       if (e.key === "Escape" && activeSearchInput) closeVirtualKeyboard();
     });
 
-    if (window.matchMedia) {
-      const mq = window.matchMedia(VK_DESKTOP_QUERY);
-      mq.addEventListener?.("change", (ev) => { if (!ev.matches) closeVirtualKeyboard(); });
-    }
   }
 
   /* ---- Mobile: painel no topo quando o teclado abre ---- */
@@ -10555,7 +10551,10 @@
     el.roomSelectModal.hidden = false;
     el.roomSelectModal.setAttribute("aria-hidden", "false");
     renderRoomModal();
-    requestAnimationFrame(() => el.roomModalSearch?.focus());
+    requestAnimationFrame(() => {
+      el.roomModalSearch?.focus();
+      openVirtualKeyboard(el.roomModalSearch);
+    });
   }
 
   function confirmRoomModalSelection() {
@@ -11853,6 +11852,8 @@
     el.roomModalCancel?.addEventListener("click", closeRoomModal);
     el.roomModalGo?.addEventListener("click", confirmRoomModalSelection);
     el.roomModalSearch?.addEventListener("input", renderRoomModal);
+    el.roomModalSearch?.addEventListener("focus", () => openVirtualKeyboard(el.roomModalSearch));
+    el.roomModalSearch?.addEventListener("click", () => openVirtualKeyboard(el.roomModalSearch));
     el.roomSelectModal?.addEventListener("click", (e) => {
       if (e.target === el.roomSelectModal) closeRoomModal();
     });

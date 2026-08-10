@@ -98,7 +98,7 @@
               <button type="button" class="gps-orient-btn" id="gpsOrientBtn" data-state="IDLE" title="Orientar pelo GPS">Orientar pelo GPS</button>
             </div>
             <input class="field__input" id="originInput" type="text" dir="ltr" autocomplete="off"
-                   autocorrect="off" autocapitalize="off" spellcheck="false"
+                   autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="none" readonly
                    placeholder="Ponto de partida" role="combobox" aria-expanded="false" aria-controls="originList" />
             <ul class="suggest" id="originList" role="listbox" hidden></ul>
             <p class="gps-accuracy" id="gpsAccuracyHint" hidden></p>
@@ -112,7 +112,7 @@
           <div class="field" id="fieldDest">
             <label class="field__label" for="destInput">Para onde vou</label>
             <input class="field__input" id="destInput" type="text" dir="ltr" autocomplete="off"
-                   autocorrect="off" autocapitalize="off" spellcheck="false"
+                   autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="none" readonly
                    placeholder="Destino final" role="combobox" aria-expanded="false" aria-controls="destList" />
             <ul class="suggest" id="destList" role="listbox" hidden></ul>
           </div>
@@ -365,7 +365,7 @@
     </div>
   </div>
 
-  <!-- Teclado virtual (desktop) — alimenta os campos de busca existentes -->
+  <!-- Teclado virtual — alimenta os campos de busca existentes -->
   <div class="virtual-keyboard" id="virtualKeyboard" hidden aria-hidden="true" role="group" aria-label="Teclado virtual">
 
     <div class="keyboard-layout">
@@ -474,7 +474,7 @@
       <div class="room-modal__search-row">
         <label class="room-modal__search">
           <span aria-hidden="true">⌕</span>
-          <input id="roomModalSearch" type="search" placeholder="Ex.: Sala 328" autocomplete="off" />
+          <input id="roomModalSearch" type="search" placeholder="Ex.: Sala 328" autocomplete="off" inputmode="none" readonly />
         </label>
         <button type="button" class="btn btn--primary room-modal__navigate" id="roomModalGo" disabled>Navegar</button>
       </div>
