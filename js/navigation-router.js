@@ -549,19 +549,32 @@
     }
 
     const raw = graph.raw || { nodes: [], edges: [], pois: [] };
-    const nodeIds = new Set(raw.nodes.map((n) => n.id));
+    const nodesById = graph.nodesById;
+    const adjacency = graph.adjacency;
+    const edgesById = graph.edgesById;
     for (const n of levelData.nodes || []) {
-      if (!nodeIds.has(n.id)) {
+      if (!nodesById.has(n.id)) {
         raw.nodes.push(n);
-        nodeIds.add(n.id);
+        nodesById.set(n.id, n);
+        adjacency.set(n.id, []);
       }
     }
-    const edgeIds = new Set(raw.edges.map((e) => e.id));
     for (const e of levelData.edges || []) {
-      if (edgeIds.has(e.id)) continue;
-      if (!nodeIds.has(e.from) || !nodeIds.has(e.to)) continue;
+      if (edgesById.has(e.id)) continue;
+      if (!nodesById.has(e.from) || !nodesById.has(e.to)) continue;
       raw.edges.push(e);
-      edgeIds.add(e.id);
+      edgesById.set(e.id, e);
+      if (!e.active) continue;
+      adjacency.get(e.from).push(e);
+      if (e.bidirectional) {
+        adjacency.get(e.to).push({
+          ...e,
+          from: e.to,
+          to: e.from,
+          path: [...(e.path || [])].reverse(),
+          _rev: true,
+        });
+      }
     }
     const poiKeys = new Set(raw.pois.map((p) => `${p.id}|${p.level || ""}`));
     for (const p of levelData.pois || []) {
@@ -572,9 +585,8 @@
       }
     }
 
-    const built = buildAdjacencyList(raw.nodes, raw.edges, { skipMissingNodes: true });
     return {
-      ...built,
+      ...graph,
       pois: raw.pois,
       metersPerUnit: graph.metersPerUnit ?? raw.metersPerUnit,
       walkingSpeedMps: graph.walkingSpeedMps ?? raw.walkingSpeedMetersPerSecond ?? 1.2,

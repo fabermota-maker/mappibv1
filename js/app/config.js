@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "319",
+    appBuild: "337",
     showAllInfoTexts: true,
     /** URL com cache-bust automático (usa appBuild). */
     appAssetUrl(path) {
@@ -266,6 +266,21 @@
       escada_mesanino_02: "Mezanino 2",
       min_esportes: "Min. esportes",
       encomun: "Encomun",
+      L06_poi_0007: "Sala 07",
+      L06_poi_0021: "Sala 08",
+      L06_poi_0040: "Sala 08",
+      L06_poi_0031: "Sala 09",
+      L06_poi_0030: "Sala 10",
+      L06_poi_0029: "Sala 11",
+      L06_poi_0037: "Sala 12",
+      L06_poi_0023: "Sala 13",
+      L06_poi_0008: "Sala 14",
+      "L06_poi_0017-2": "Sala 15",
+      L06_poi_0001: "Sala 16",
+      L06_poi_0020: "Sala 17",
+      L06_poi_0009: "Sala 18",
+      L06_poi_0039: "Sala 19",
+      L06_poi_0018: "Sala 20",
     },
     // atalhos de busca → rawId do POI
     poiSearchAliases: {
@@ -292,6 +307,21 @@
       "gfr-escadaLateral": ["escada lateral", "escadas laterais", "escadas laterais t", "escada lateral t"],
       L00_bebedouro_escadas: ["bebedouro", "bebedouduro", "agua", "água", "agua potavel", "água potável"],
       L00_bebedouro_abasc: ["bebedouro", "bebedouduro", "agua", "água", "agua potavel", "água potável"],
+      L06_poi_0007: ["sala 07", "sala 7"],
+      L06_poi_0021: ["sala 08", "sala 8"],
+      L06_poi_0040: ["sala 08", "sala 8"],
+      L06_poi_0031: ["sala 09", "sala 9"],
+      L06_poi_0030: ["sala 10"],
+      L06_poi_0029: ["sala 11"],
+      L06_poi_0037: ["sala 12"],
+      L06_poi_0023: ["sala 13"],
+      L06_poi_0008: ["sala 14"],
+      "L06_poi_0017-2": ["sala 15"],
+      L06_poi_0001: ["sala 16"],
+      L06_poi_0020: ["sala 17"],
+      L06_poi_0009: ["sala 18"],
+      L06_poi_0039: ["sala 19"],
+      L06_poi_0018: ["sala 20", "sala 21"],
     },
     // limita opções de rota em pares específicos (evita desvios absurdos no grafo)
     routeOptionCaps: [
