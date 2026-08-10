@@ -457,6 +457,35 @@
     </div>
   </div>
 
+  <div class="room-modal" id="roomSelectModal" hidden aria-hidden="true">
+    <section class="room-modal__card" role="dialog" aria-modal="true" aria-labelledby="roomModalTitle">
+      <header class="room-modal__head">
+        <span class="room-modal__icon" aria-hidden="true">⌂</span>
+        <div>
+          <h2 id="roomModalTitle">Selecionar sala</h2>
+          <p><span class="room-modal__origin-text">1º local: partida.</span> <span class="room-modal__destination-text">2º local: destino.</span></p>
+        </div>
+        <div class="room-modal__legend" aria-label="Legenda de seleção">
+          <span><i class="room-modal__legend-dot room-modal__legend-dot--origin"></i>Partida</span>
+          <span><i class="room-modal__legend-dot room-modal__legend-dot--destination"></i>Destino</span>
+        </div>
+        <button type="button" class="room-modal__close" id="roomModalClose" aria-label="Fechar">×</button>
+      </header>
+      <div class="room-modal__search-row">
+        <label class="room-modal__search">
+          <span aria-hidden="true">⌕</span>
+          <input id="roomModalSearch" type="search" placeholder="Ex.: Sala 328" autocomplete="off" />
+        </label>
+        <button type="button" class="btn btn--primary room-modal__navigate" id="roomModalGo" disabled>Navegar</button>
+      </div>
+      <div class="room-modal__floors" id="roomModalFloors" role="tablist" aria-label="Andares"></div>
+      <div class="room-modal__rooms" id="roomModalRooms" role="listbox" aria-label="Salas"></div>
+      <footer class="room-modal__actions">
+        <button type="button" class="btn btn--ghost" id="roomModalCancel">Cancelar</button>
+      </footer>
+    </section>
+  </div>
+
   <script>
     (function () {
       var s = document.createElement("script");

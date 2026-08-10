@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "337",
+    appBuild: "350",
     showAllInfoTexts: true,
     /** URL com cache-bust automático (usa appBuild). */
     appAssetUrl(path) {
@@ -922,7 +922,6 @@
     // filtros da lista de destinos
     searchGroups: [
       { id: "all", label: "Todos" },
-      { id: "floor", label: "Neste andar" },
       { id: "salas", label: "Salas" },
       { id: "auditorios", label: "Auditórios" },
       { id: "banheiros", label: "Banheiros" },

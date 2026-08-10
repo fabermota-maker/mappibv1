@@ -70,6 +70,10 @@
     floorBtn: $("floorBtn"), floorMenu: $("floorMenu"), floorPicker: $("floorPicker"),
     areaBtn: $("areaBtn"), areaMenu: $("areaMenu"), areaPicker: $("areaPicker"),
     areaBadge: $("areaBadge"),
+    roomSelectModal: $("roomSelectModal"), roomModalClose: $("roomModalClose"),
+    roomModalCancel: $("roomModalCancel"), roomModalSearch: $("roomModalSearch"),
+    roomModalFloors: $("roomModalFloors"), roomModalRooms: $("roomModalRooms"),
+    roomModalGo: $("roomModalGo"),
     floorHint: $("floorHint"), floorBanner: $("floorBanner"),
     floorBannerTitle: $("floorBannerTitle"), floorBannerMsg: $("floorBannerMsg"),
     mapTools: $("mapTools"), mapToolsExtras: $("mapToolsExtras"),
@@ -151,6 +155,9 @@
     gpsOrientation: null,
     liveNav: null,
     liveMapMatchEnhancer: null,
+    roomModalFloor: null,
+    roomModalOrigin: null,
+    roomModalDest: null,
   };
 
   const CAT_LABEL = {
@@ -1003,8 +1010,8 @@
   }
 
   /** Pesquisa direta das salas numeradas da ala direita do L06. */
-  function searchL06EastRooms(query) {
-    if (state.activeLevel !== "L06") return [];
+  function searchL06EastRooms(query, floorId = state.activeLevel) {
+    if (floorId !== "L06") return [];
     const q = normSearch(query);
     if (!q || !/^sala\b/.test(q)) return [];
     const rooms = [
@@ -10040,7 +10047,7 @@
       drawRoute();
       return;
     }
-    if (poi && poiMapViewLevel(poi) !== state.activeLevel) {
+    if (poi && !opts.keepMapLevel && poiMapViewLevel(poi) !== state.activeLevel) {
       const viewLvl = poiMapViewLevel(poi);
       const originLvl = state.origin ? poiMapViewLevel(state.origin) : null;
       if (which === "dest" && isBasementFloor(poiLevel(poi)) && originLvl && !isBasementFloor(originLvl)) {
@@ -10460,9 +10467,114 @@
     if (el.areaBtn) el.areaBtn.setAttribute("aria-expanded", "false");
   }
 
+  function roomModalPoisForFloor(floorId) {
+    const listed = (G.pois || []).filter((poi) =>
+      isSearchablePoi(poi)
+      && poiDisplayLevel(poi) === floorId
+    );
+    // “Templo” é um destino geral com múltiplas entradas, criado pela
+    // navegação em vez de existir como um POI único no SVG.
+    const generalDestinations = floorId === "L00" ? [buildGenericTemplePoi()] : [];
+    const l06Rooms = floorId === "L06" ? searchL06EastRooms("sala", floorId) : [];
+    const seen = new Set();
+    return [...listed, ...generalDestinations, ...l06Rooms]
+      .filter((poi) => {
+        const key = normSearch(poi.searchLabel || poi.name)
+          .replace(/\b(?:l[0-6]|b[0-2]|terreo)\b/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => (a.searchLabel || a.name).localeCompare(b.searchLabel || b.name, "pt-BR", { numeric: true }));
+  }
+
+  function renderRoomModal() {
+    if (!el.roomModalFloors || !el.roomModalRooms) return;
+    const floors = visibleFloors().filter((floor) => isCampusFloor(floor.id));
+    const selectedFloor = state.roomModalFloor || state.activeLevel || "L00";
+    const query = normSearch(el.roomModalSearch?.value || "");
+    el.roomModalFloors.innerHTML = floors.map((floor) =>
+      `<button type="button" class="room-modal__floor ${floor.id === selectedFloor ? "is-active" : ""}"
+        data-room-floor="${floor.id}" role="tab" aria-selected="${floor.id === selectedFloor}">${formatFloorTag(floor.id)}</button>`
+    ).join("");
+    const rooms = roomModalPoisForFloor(selectedFloor).filter((poi) => {
+      if (!query) return true;
+      return poiSearchScore(poi, query, query) > 0;
+    });
+    if (!rooms.length) {
+      el.roomModalRooms.innerHTML = `<p class="room-modal__empty">Nenhum local encontrado neste andar.</p>`;
+    } else {
+      el.roomModalRooms.innerHTML = rooms.map((poi) => {
+        const isOrigin = state.roomModalOrigin?.id === poi.id;
+        const isDest = state.roomModalDest?.id === poi.id;
+        const role = isOrigin ? "is-origin" : (isDest ? "is-destination" : "");
+        const selectionLabel = isOrigin ? "Local de partida" : (isDest ? "Local de destino" : "Selecionar local");
+        return `<button type="button" class="room-modal__room ${role}"
+          data-room-id="${poi.id}" aria-selected="${isOrigin || isDest}" aria-label="${selectionLabel}: ${poi.searchLabel || poi.name}">${poi.searchLabel || poi.name}</button>`;
+      }).join("");
+    }
+    el.roomModalFloors.querySelectorAll("[data-room-floor]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.roomModalFloor = btn.dataset.roomFloor;
+        renderRoomModal();
+      });
+    });
+    el.roomModalRooms.querySelectorAll("[data-room-id]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const room = rooms.find((poi) => poi.id === btn.dataset.roomId);
+        if (!room) return;
+        if (!state.roomModalOrigin || (state.roomModalOrigin && state.roomModalDest)) {
+          state.roomModalOrigin = room;
+          state.roomModalDest = null;
+        } else if (state.roomModalOrigin.id !== room.id) {
+          state.roomModalDest = room;
+        }
+        renderRoomModal();
+      });
+    });
+    if (el.roomModalGo) el.roomModalGo.disabled = !(state.roomModalOrigin && state.roomModalDest);
+  }
+
+  function closeRoomModal() {
+    if (!el.roomSelectModal) return;
+    el.roomSelectModal.hidden = true;
+    el.roomSelectModal.setAttribute("aria-hidden", "true");
+  }
+
+  function openRoomModal() {
+    if (!el.roomSelectModal) return;
+    closeAreaMenu();
+    closeSuggest();
+    closeVirtualKeyboard();
+    state.roomModalFloor = isCampusFloor(state.activeLevel) ? state.activeLevel : "L00";
+    state.roomModalOrigin = null;
+    state.roomModalDest = null;
+    if (el.roomModalSearch) el.roomModalSearch.value = "";
+    el.roomSelectModal.hidden = false;
+    el.roomSelectModal.setAttribute("aria-hidden", "false");
+    renderRoomModal();
+    requestAnimationFrame(() => el.roomModalSearch?.focus());
+  }
+
+  function confirmRoomModalSelection() {
+    const origin = state.roomModalOrigin;
+    const dest = state.roomModalDest;
+    if (!origin || !dest) return;
+    closeRoomModal();
+    setSearchGroup("salas");
+    setField("origin", origin, { skipRoute: true });
+    // A rota pelo seletor abre sempre no andar da partida. O destino continua
+    // registrado normalmente, mas não troca a visualização antes do traçado.
+    setField("dest", dest, { skipRoute: true, keepMapLevel: true });
+    drawRoute();
+  }
+
   function renderAreaMenu() {
     if (!el.areaMenu) return;
-    const groups = CONFIG.searchGroups || [];
+    // O botão de filtros abre somente o seletor completo de locais/salas.
+    const groups = (CONFIG.searchGroups || []).filter((group) => group.id === "salas");
     el.areaMenu.innerHTML = groups.map((g) => {
       const selected = g.id === state.searchGroup;
       return `<li role="option">
@@ -10476,6 +10588,10 @@
     el.areaMenu.querySelectorAll("[data-group]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.preventDefault();
+        if (btn.dataset.group === "salas") {
+          openRoomModal();
+          return;
+        }
         setSearchGroup(btn.dataset.group);
         closeAreaMenu();
       });
@@ -11719,7 +11835,7 @@
       el.areaBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        toggleAreaMenu();
+        openRoomModal();
       });
     }
     if (el.floorBtn) {
@@ -11732,6 +11848,16 @@
     document.addEventListener("pointerdown", (e) => {
       if (state.areaMenuOpen && el.areaPicker && !e.target.closest("#areaPicker")) closeAreaMenu();
       if (state.floorMenuOpen && el.floorPicker && !e.target.closest("#floorPicker")) closeFloorMenu();
+    });
+    el.roomModalClose?.addEventListener("click", closeRoomModal);
+    el.roomModalCancel?.addEventListener("click", closeRoomModal);
+    el.roomModalGo?.addEventListener("click", confirmRoomModalSelection);
+    el.roomModalSearch?.addEventListener("input", renderRoomModal);
+    el.roomSelectModal?.addEventListener("click", (e) => {
+      if (e.target === el.roomSelectModal) closeRoomModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !el.roomSelectModal?.hidden) closeRoomModal();
     });
     // inputs autocomplete
     function initSearchField(input) {
