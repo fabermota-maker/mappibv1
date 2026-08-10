@@ -10551,10 +10551,6 @@
     el.roomSelectModal.hidden = false;
     el.roomSelectModal.setAttribute("aria-hidden", "false");
     renderRoomModal();
-    requestAnimationFrame(() => {
-      el.roomModalSearch?.focus();
-      openVirtualKeyboard(el.roomModalSearch);
-    });
   }
 
   function confirmRoomModalSelection() {
