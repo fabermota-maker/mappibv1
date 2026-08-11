@@ -6389,6 +6389,14 @@
   }
 
   /* ============================================================ CARREGAR SVG */
+  function revealInitialApp() {
+    const loader = document.getElementById("initialLoader");
+    document.body.classList.remove("is-app-loading");
+    if (!loader) return;
+    requestAnimationFrame(() => loader.classList.add("is-leaving"));
+    setTimeout(() => { loader.hidden = true; }, 400);
+  }
+
   async function loadSVG() {
     try {
       const fileEntries = Object.entries(CONFIG.svgFiles);
@@ -6526,6 +6534,7 @@
       el.statusHint.textContent = `Não foi possível montar o mapa: ${err.message}`;
       console.error(err);
     }
+    revealInitialApp();
   }
 
   function isGpsEnabled() {
@@ -10264,10 +10273,25 @@
   function closeSuggest() { el.originList.hidden = true; el.destList.hidden = true; }
 
   /* ============================================================ TECLADO VIRTUAL
-     Usado em todos os dispositivos. Alimenta os campos de busca existentes
-     disparando os mesmos eventos da digitação física — autocomplete, POI/node
-     e rota inalterados, sem abrir o teclado do sistema operacional. */
+     Exclusivo do desktop/totem. Em celular/tablet, os campos permanecem
+     editáveis para usar o teclado nativo do dispositivo. */
+  const VK_DESKTOP_QUERY = "(min-width: 1024px)";
   let activeSearchInput = null;
+
+  function vkIsDesktop() {
+    return window.matchMedia
+      ? window.matchMedia(VK_DESKTOP_QUERY).matches
+      : window.innerWidth >= 1024;
+  }
+
+  function syncSearchInputKeyboardMode() {
+    const useVirtualKeyboard = vkIsDesktop();
+    [el.originInput, el.destInput, el.roomModalSearch].filter(Boolean).forEach((input) => {
+      input.readOnly = useVirtualKeyboard;
+      input.setAttribute("inputmode", useVirtualKeyboard ? "none" : "text");
+    });
+    if (!useVirtualKeyboard) closeVirtualKeyboard();
+  }
 
   function vkFieldOf(input) {
     if (input?.id === "roomModalSearch") return "room";
@@ -10275,7 +10299,7 @@
   }
 
   function openVirtualKeyboard(input) {
-    if (!el.virtualKeyboard || !input || input.disabled) return;
+    if (!el.virtualKeyboard || !input || input.disabled || !vkIsDesktop()) return;
     activeSearchInput = input;
     el.virtualKeyboard.hidden = false;
     el.virtualKeyboard.setAttribute("aria-hidden", "false");
@@ -10379,6 +10403,10 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && activeSearchInput) closeVirtualKeyboard();
     });
+    if (window.matchMedia) {
+      const mq = window.matchMedia(VK_DESKTOP_QUERY);
+      mq.addEventListener?.("change", syncSearchInputKeyboardMode);
+    }
 
   }
 
@@ -11940,6 +11968,7 @@
     initSearchField(el.originInput);
     initSearchField(el.destInput);
     initVirtualKeyboard();
+    syncSearchInputKeyboardMode();
     document.addEventListener("pointerdown", (e) => {
       if (e.target.closest(".virtual-keyboard")) return;
       if (!e.target.closest(".field") && !e.target.closest(".suggest") && !e.target.closest("#browseBar")) {
