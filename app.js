@@ -1532,10 +1532,13 @@
     const useStairs = !!(route?.viaStairs || route?.kind === "stairs");
     const hub = useStairs ? stairHub(levelId) : elevatorHub(levelId);
     if (!hub?.nodeId) return null;
-    const n = state.navGraph?.nodesById?.get(hub.nodeId);
-    if (n) return { x: n.x, y: n.y, nodeId: hub.nodeId };
     const raw = useStairs ? "L00_escadas_laterais_t" : "P027_elevador_templo";
     const icon = CONFIG.poiIconCampus?.[raw] || CONFIG.poiRouteEdges?.[raw]?.icon;
+    // No Térreo, a chegada deve ser desenhada no ícone visível das escadas
+    // laterais (junto à Fonte), e não no nó técnico da malha.
+    if (levelId === "L00" && icon) return { x: icon.x, y: icon.y, nodeId: hub.nodeId };
+    const n = state.navGraph?.nodesById?.get(hub.nodeId);
+    if (n) return { x: n.x, y: n.y, nodeId: hub.nodeId };
     return icon ? { x: icon.x, y: icon.y, nodeId: hub.nodeId } : null;
   }
 
@@ -1606,6 +1609,10 @@
         const mesh = NR.astar(startId, [hub.nodeId], state.navGraph, { avoidParking: false });
         if (mesh?.points?.length >= 2) {
           out = out.concat(mesh.points.slice(1).map((p) => ({ x: p.x, y: p.y })));
+          const meshTip = out[out.length - 1];
+          if (dist(meshTip, hubPt) > 0.8 && !crossesWall(meshTip, hubPt, levelId)) {
+            out.push(hubPt);
+          }
           return out;
         }
       }
