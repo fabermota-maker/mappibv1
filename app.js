@@ -6415,9 +6415,16 @@
       }));
       const sources = Object.fromEntries(loaded);
 
-      const expectedViewBox = sources.background.getAttribute("viewBox");
+      const expectedViewBox = (sources.background.getAttribute("viewBox") || "")
+        .trim().split(/[\s,]+/).map(Number);
       for (const [key, source] of loaded) {
-        if (source.getAttribute("viewBox") !== expectedViewBox) {
+        const currentViewBox = (source.getAttribute("viewBox") || "")
+          .trim().split(/[\s,]+/).map(Number);
+        const compatible = currentViewBox.length === 4
+          && expectedViewBox.length === 4
+          && currentViewBox.every((value, i) => Number.isFinite(value)
+            && Math.abs(value - expectedViewBox[i]) <= 0.05);
+        if (!compatible) {
           throw new Error(`O viewBox de ${key} difere do background`);
         }
       }
