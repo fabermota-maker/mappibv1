@@ -84,6 +84,7 @@ body {
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
   overflow: hidden;
+  touch-action: pan-x pan-y;
 }
 
 /* Mapa de ruas (vetor) — fundo fullscreen sutil */
@@ -1603,6 +1604,7 @@ body.is-navigating .nav-overlay .compass {
   display: none; place-items: center; z-index: 25;
   flex: none;
 }
+.panel-toggle__hint { display: none; }
 
 .nav-overlay {
   position: fixed; inset: 0; z-index: 200;
@@ -1861,6 +1863,33 @@ body.is-navigating .nav-overlay .compass {
     box-shadow: var(--shadow-sm);
   }
   .map-tools .panel-toggle { display: grid; }
+  .panel-toggle__hint {
+    position: absolute;
+    left: calc(100% + 10px);
+    top: 4px;
+    display: block;
+    width: min(210px, calc(100vw - 84px));
+    padding: 9px 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    background: var(--glass-strong);
+    box-shadow: var(--shadow-sm);
+    color: var(--ink);
+    font: 650 12px/1.25 var(--font, inherit);
+    pointer-events: none;
+  }
+  .panel-toggle__hint::before {
+    content: "";
+    position: absolute;
+    left: -6px;
+    top: 16px;
+    width: 11px;
+    height: 11px;
+    background: var(--glass-strong);
+    border-left: 1px solid var(--line-strong);
+    border-bottom: 1px solid var(--line-strong);
+    transform: rotate(45deg);
+  }
   .map-tools .floor-menu {
     left: calc(100% + 8px);
     right: auto;
@@ -2083,7 +2112,7 @@ body.is-navigating .nav-overlay .compass {
 .initial-loader__content { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 12px; font: 600 16px/1.2 var(--font, inherit); }
 .initial-loader__brand { display: flex; flex-direction: column; align-items: flex-start; font: 800 42px/.82 var(--font, inherit); letter-spacing: -.04em; }
 .initial-loader__brand strong { display: flex; align-items: center; color: #f3ead9; }
-.initial-loader__brand img { display: block; width: 28px; height: 28px; margin-left: 4px; }
+.initial-loader__pin { display: block; width: 28px; height: 28px; margin-left: 4px; color: #fff; }
 .initial-loader__brand span { color: #00efaa; }
 .initial-loader__content p { margin: 0; }
 .pulse-ring { transform-origin: 50% 50%; animation: pulse 1400ms ease-out infinite; }

@@ -2,7 +2,7 @@
 <html lang="pt-BR" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0a1220" />
   <title>Mapa Interativo — Encontre sua rota</title>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -21,7 +21,7 @@
     .initial-loader__content p { margin: 0; }
     .initial-loader__brand { display: flex; flex-direction: column; align-items: flex-start; font: 800 42px/.82 Outfit, sans-serif; letter-spacing: -.04em; }
     .initial-loader__brand strong { display: flex; align-items: center; color: #f3ead9; }
-    .initial-loader__brand img { width: 28px; height: 28px; margin-left: 4px; }
+    .initial-loader__pin { width: 28px; height: 28px; margin-left: 4px; color: #fff; }
     .initial-loader__brand span { color: #00efaa; }
     .pulse-ring { transform-origin: 50% 50%; animation: pulse 1400ms ease-out infinite; }
     @keyframes pulse { 0% { transform: scale(.8); opacity: 1; } 100% { transform: scale(2); opacity: 0; } }
@@ -52,7 +52,12 @@
   <div class="initial-loader" id="initialLoader" role="status" aria-live="polite">
     <div class="initial-loader__content">
       <div class="initial-loader__brand" aria-label="Aqui na PIB">
-        <strong>AQUI <img src="assets/brand-pin.svg" alt="" /></strong>
+        <strong>AQUI
+          <svg class="initial-loader__pin" viewBox="0 0 64 80" aria-hidden="true">
+            <path fill="currentColor" fill-rule="evenodd" d="M32 2c16.016 0 29 12.984 29 29 0 14.35-9.86 24.86-20.55 35.05C35.2 71.7 33.2 74.4 32 76.5c-1.2-2.1-3.2-4.8-8.45-10.45C12.86 55.86 3 45.35 3 31 3 14.984 15.984 2 32 2Zm0 10.5c-10.217 0-18.5 8.283-18.5 18.5 0 10.217 8.283 18.5 18.5 18.5s18.5-8.283 18.5-18.5c0-10.217-8.283-18.5-18.5-18.5Z"/>
+            <path fill="currentColor" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" d="M22.5 21.5 41.5 40.5M41.5 21.5 22.5 40.5"/>
+          </svg>
+        </strong>
         <span>NA PIB</span>
       </div>
       <p>Carregando mapa...</p>
@@ -340,6 +345,7 @@
         <button type="button" class="map-tools__btn panel-toggle" id="panelToggle" aria-label="Abrir/fechar painel" aria-expanded="false">
           <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
+        <span class="panel-toggle__hint">Clique aqui e navegue ao seu destino</span>
       </div>
     </main>
 

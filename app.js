@@ -12152,7 +12152,7 @@
       el.viewport.setPointerCapture(e.pointerId);
     });
     el.viewport.addEventListener("pointermove", (e) => {
-      if (!state.drag) return;
+      if (!state.drag || pinching) return;
       const dx = e.clientX - state.sx, dy = e.clientY - state.sy;
       if (Math.abs(dx) + Math.abs(dy) > 3) {
         state.moved = true;
@@ -12181,6 +12181,10 @@
       if (e.touches.length === 2) {
         e.preventDefault();
         pinching = true;
+        // O primeiro dedo também dispara eventos pointer. Ao cancelar o pan
+        // aqui, somente o centro real da pinça define a âncora do zoom.
+        state.drag = false;
+        el.viewport.classList.remove("dragging");
         mapPickCtrl?.setPinching?.(true);
         const [a, b] = e.touches;
         const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
