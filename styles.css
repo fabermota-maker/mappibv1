@@ -2081,7 +2081,10 @@ body.is-navigating .nav-overlay .compass {
 }
 .initial-loader.is-leaving { opacity: 0; visibility: hidden; pointer-events: none; }
 .initial-loader__content { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 12px; font: 600 16px/1.2 var(--font, inherit); }
-.initial-loader__content img { display: block; width: min(190px, 48vw); height: auto; }
+.initial-loader__brand { display: flex; flex-direction: column; align-items: flex-start; font: 800 42px/.82 var(--font, inherit); letter-spacing: -.04em; }
+.initial-loader__brand strong { display: flex; align-items: center; color: #f3ead9; }
+.initial-loader__brand img { display: block; width: 28px; height: 28px; margin-left: 4px; }
+.initial-loader__brand span { color: #00efaa; }
 .initial-loader__content p { margin: 0; }
 .pulse-ring { transform-origin: 50% 50%; animation: pulse 1400ms ease-out infinite; }
 @keyframes pulse {

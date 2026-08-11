@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
   global.PIBMapConfig = {
-    appBuild: "362",
+    appBuild: "363",
     showAllInfoTexts: true,
     /** URL com cache-bust automático (usa appBuild). */
     appAssetUrl(path) {

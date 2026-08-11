@@ -6391,6 +6391,8 @@
   /* ============================================================ CARREGAR SVG */
   function revealInitialApp() {
     const loader = document.getElementById("initialLoader");
+    document.documentElement.dataset.appReady = "true";
+    window.dispatchEvent(new Event("appReady"));
     document.body.classList.remove("is-app-loading");
     if (!loader) return;
     requestAnimationFrame(() => loader.classList.add("is-leaving"));
